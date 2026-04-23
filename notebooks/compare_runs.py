@@ -816,7 +816,7 @@ def generate_html_report(
               plugins: {{ legend: {{ position: 'top' }} }},
               scales: {{
                 x: {{ title: {{ display: true, text: 'Layer' }} }},
-                y: {{ title: {{ display: true, text: 'Avg cosine' }}, min: -1, max: 1 }}
+                y: {{ title: {{ display: true, text: 'Avg cosine' }}, min: 0, max: 1 }}
               }}
             }}
           }});"""
