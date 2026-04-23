@@ -99,7 +99,8 @@ Here's what I found:
 The practical part? You don't need to scan all 36 layers. Five strategic hooks, at layers 2, 14, 23, 29–31, and 33 — give you hierarchical emotion detection from "is this emotional?" to "which exact emotion?" with under 1ms overhead.
 This opens the door to monitoring AI conversations by what the model is thinking, not just what it says.
 
-![User Conversation Average vs. References](published/average-vs-references-user-snapshots.png)
+![User Messages Average vs. References](published/average-vs-references-user-snapshots.png)
+![Assistant Messages Average vs. References](published/average-vs-references-assistant-snapshots.png)
 
 ---
 
