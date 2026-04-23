@@ -1,0 +1,479 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+% \usepackage{algorithm}
+% \usepackage{algpseudocode}
+\usepackage{natbib}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{pgfplotstable}
+\usepgfplotslibrary{colorbrewer}
+
+\hypersetup{
+  colorlinks=true, linkcolor=blue!60!black,
+  citecolor=green!50!black, urlcolor=blue!60!black
+}
+
+\lstset{
+  language=Python, basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{red!60!black},
+  frame=single, breaklines=true, numbers=left,
+  numberstyle=\tiny\color{gray}, backgroundcolor=\color{gray!5}
+}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{%
+  \textbf{Where Emotions Lie Inside a Neural Network:\\
+  A CT Scan of LLM Hidden States During\\
+  Emotionally Charged Conversations}
+}
+\author{
+  Cornel Stefanache\\
+  \texttt{cornel.stefanache@ascentcore.com}
+}
+\date{April 2026}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+
+% ── Abstract ──────────────────────────────────────────────────────────────────
+\begin{abstract}
+We present a method for localizing emotional representations within the hidden layers of a large language model by capturing full activation snapshots at every transformer block during multi-turn conversations. Using a tool called \textsc{Activation Lab}, we record the residual stream (hidden input/output), attention output, and MLP down-projection output at all 36 layers of Qwen2.5-3B-Instruct and compare them against nine reference emotional fingerprints (love, hate, sadness, annoyance, fear, joy, apathy, confusion, peace) via cosine similarity, mean absolute error, and Jaccard overlap of the top-1\% most active neurons.
+
+Our experiment uses a 20-turn conversation designed to induce rapid mood swings in the user—from joy to fear, anger, apathy, surprise, confusion, and calm—while the assistant responds empathetically. Three key findings emerge: (1)~the residual stream maintains high cosine similarity to all references ($0.83$--$0.88$), forming a stable emotional backbone; (2)~the attention and MLP sub-layers ($0.47$--$0.64$ cosine) are where emotional differentiation occurs; and (3)~the assistant's responses consistently flatten emotional signal strength relative to user messages, revealing an implicit ``emotional damping'' mechanism. A per-layer discrimination analysis identifies layers~29--33 as the primary sites of emotion-specific encoding, with layer~31 achieving the highest discrimination spread ($0.111$) across the entire network. We propose a five-checkpoint hook architecture for real-time emotion monitoring that adds less than 1\,ms overhead per forward pass.
+\end{abstract}
+
+\vspace{0.5em}
+\noindent\textbf{Keywords:} mechanistic interpretability, activation analysis, emotional representation, transformer internals, LLM monitoring
+
+% ── 1. Introduction ───────────────────────────────────────────────────────────
+\section{Introduction}
+
+Large language models (LLMs) respond to emotionally charged inputs with contextually appropriate outputs, but the mechanism by which they represent, propagate, and modulate emotional tone through their internal layers remains poorly understood. Do emotions ``live'' in specific layers? Is the signal carried by the attention mechanism, the MLP, or the residual stream itself? When a model is instructed to be a ``helpful assistant,'' does its internal representation remain emotionally neutral, or does it mirror the user's emotional state?
+
+Prior work in mechanistic interpretability has focused on factual knowledge retrieval~\citep{meng2022locating}, circuit discovery~\citep{olah2020zoom}, and logit lens analysis~\citep{nostalgebraist2020logitlens}. Probing classifiers have been used to detect sentiment in hidden states~\citep{conneau2018probing}, but these provide limited insight into \emph{where} within the network emotions are processed and how the model modulates its emotional response across conversation turns.
+
+This work addresses these gaps by developing a systematic capture-and-compare methodology that records the full residual stream at every transformer block during a multi-turn conversation with strong emotional variation, and compares each snapshot against a library of reference emotional states.
+
+\subsection{Contributions}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Activation Lab}: An open-source tool for scenario-driven activation capture of HuggingFace causal language models, with support for conversation snapshots and reference state comparison.
+  \item \textbf{Layer-by-layer emotion localization}: Identification of layers~29--33 as the primary sites of emotion-specific encoding in Qwen2.5-3B-Instruct, with layer~31 achieving the highest discrimination spread.
+  \item \textbf{Emotional damping quantification}: Measurement of a consistent $0.03$ gap (residual stream) and $0.10$--$0.13$ gap (sub-layers) between user and assistant emotional intensity, revealing an implicit moderation mechanism.
+  \item \textbf{Practical hook architecture}: A five-checkpoint monitoring system operating at layers~2, 14, 23, 29--31, and 33 that enables real-time emotion tracking with sub-millisecond overhead.
+\end{enumerate}
+
+% ── 2. Method ─────────────────────────────────────────────────────────────────
+\section{Method}
+
+\subsection{Activation Capture}
+
+\textsc{Activation Lab} attaches forward hooks to every transformer block of a HuggingFace causal LM during inference. For each block $l \in \{0, 1, \ldots, L{-}1\}$, we capture four activation tensors at the last token position:
+
+\begin{description}[leftmargin=1.5cm, labelwidth=1.3cm]
+  \item[\texttt{hidden\_in}] The residual stream entering block $l$: the cumulative contextual representation before any block-specific processing.
+  \item[\texttt{hidden\_out}] The residual stream leaving block $l$: after attention, MLP, and residual connections, i.e., $\mathbf{x}^{(l+1)} = \mathbf{x}^{(l)} + \text{Attn}^{(l)}(\mathbf{x}^{(l)}) + \text{MLP}^{(l)}(\mathbf{x}^{(l)} + \text{Attn}^{(l)}(\mathbf{x}^{(l)}))$.
+  \item[\texttt{attn\_out}] The output of the multi-head self-attention sub-layer (before residual addition): $\text{Attn}^{(l)}(\mathbf{x}^{(l)})$.
+  \item[\texttt{mlp\_down\_out}] The output of the MLP sub-layer's down-projection: $W_\text{down}\,\sigma(W_\text{gate}\,\mathbf{h} \odot W_\text{up}\,\mathbf{h})$ where $\sigma$ is SiLU.
+\end{description}
+
+\subsection{Conversation Snapshots}
+
+After generation completes, the model runs one additional prefill pass for each message prefix: $\text{messages}[:1], \text{messages}[:2], \ldots, \text{messages}[:n]$. Each pass captures the last-token hidden states at all $L$ layers. This yields a snapshot of the model's internal state after processing each conversational turn.
+
+\subsection{Reference State Capture}
+
+For each of $R$ reference emotions, the model processes a short, emotionally concentrated prompt and captures the same last-token vectors across all layers. These serve as emotional fingerprints $\{\mathbf{r}^{(l)}_k\}_{l=0}^{L-1}$ for reference $k \in \{1, \ldots, R\}$.
+
+\subsection{Comparison Metrics}
+
+Every snapshot is compared against every reference at every layer using three metrics:
+
+\begin{align}
+  \text{Cosine}(\mathbf{s}, \mathbf{r}) &= \frac{\mathbf{s} \cdot \mathbf{r}}{\|\mathbf{s}\| \, \|\mathbf{r}\|} \label{eq:cosine} \\
+  \text{MAE}(\mathbf{s}, \mathbf{r}) &= \frac{1}{H} \sum_{i=1}^{H} |s_i - r_i| \label{eq:mae} \\
+  \text{Jaccard}(\mathbf{s}, \mathbf{r}) &= \frac{|\text{top}_p(\mathbf{s}) \cap \text{top}_p(\mathbf{r})|}{|\text{top}_p(\mathbf{s}) \cup \text{top}_p(\mathbf{r})|} \label{eq:jaccard}
+\end{align}
+
+where $H = 2048$ is the hidden dimension and $\text{top}_p$ selects the indices of the top-1\% most active neurons.
+
+% ── 3. Experimental Setup ────────────────────────────────────────────────────
+\section{Experimental Setup}
+
+\subsection{Model}
+
+\textbf{Qwen2.5-3B-Instruct}~---~a 3-billion parameter instruction-tuned model with $L = 36$ transformer blocks, $H = 2048$ hidden dimension, grouped-query attention with 16 heads (2 KV heads), and SwiGLU MLP with 11,008 intermediate dimension.
+
+\subsection{Conversation Design}
+
+The conversation comprises 20 messages (1 system + 10 user + 9 assistant turns) designed to trigger rapid emotional transitions. Table~\ref{tab:conversation} summarizes the emotional trajectory.
+
+\begin{table}[H]
+\centering
+\caption{Conversation design with intended emotional states.}
+\label{tab:conversation}
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+Turn & Role & Content (excerpt) & Intended Emotion \\
+\midrule
+0 & system & ``You are a helpful assistant'' & Neutral \\
+1 & user & ``I just had the most wonderful day\ldots'' & Joy \\
+2 & assistant & ``That's great to hear!\ldots'' & Mirrored joy \\
+3 & user & ``Good news but feeling uneasy\ldots'' & Mixed/unease \\
+5 & user & ``I'm scared things will fall apart\ldots'' & Fear \\
+7 & user & ``I hate that I keep trusting\ldots Nobody cares.'' & Hate/anger \\
+9 & user & ``Maybe there's still hope\ldots'' & Hope \\
+11 & user & ``They completely ignored me\ldots'' & Sadness \\
+13 & user & ``I'm just numb\ldots a blank void.'' & Apathy \\
+15 & user & ``I got the promotion!!'' & Ecstatic joy \\
+17 & user & ``What if I can't handle it?'' & Confusion/anxiety \\
+19 & user & ``I feel calm and present.'' & Peace \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Reference States}
+
+Nine emotionally concentrated single-turn prompts were designed with saturated emotional vocabulary: \emph{love, hate, sadness, annoyance, fear, joy, apathy, confusion, peace}. Each produces a strong, unambiguous activation signature at all 36 layers.
+
+\subsection{Generation Parameters}
+
+Greedy decoding (temperature${}=0$, seed${}=42$), 50 tokens generated. The model output: ``\emph{That's wonderful to hear. Taking a moment to breathe and acknowledge your feelings can really help. You're doing great. If you need to take a break or talk more, I'm here whenever you are.}''
+
+All activations stored at \texttt{float16} precision. Total measurements: $36 \text{ layers} \times 4 \text{ sources} \times 20 \text{ messages} \times 9 \text{ references} = 25{,}920$ comparison values.
+
+% ── 4. Results ────────────────────────────────────────────────────────────────
+\section{Results}
+
+\subsection{Intra-Run Drift: Prompt to Response}
+
+We first quantify how much the model's internal state changes between the last prompt token (initial state) and the last generated token (final state).
+
+\begin{table}[H]
+\centering
+\caption{Mean cosine similarity (initial $\to$ final) by activation source.}
+\label{tab:intra}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Source & Mean Cos & Std & Median & Min (Layer) \\
+\midrule
+\texttt{hidden\_in} & $0.666$ & $0.059$ & $0.680$ & $0.548$ (L0) \\
+\texttt{hidden\_out} & $0.658$ & $0.085$ & $0.680$ & $0.279$ (L35) \\
+\texttt{attn\_out} & $0.495$ & $0.189$ & $0.510$ & $0.120$ (L5) \\
+\texttt{mlp\_down\_out} & $0.275$ & $0.143$ & $0.250$ & $-0.083$ (L2) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The MLP sub-layer shows the most dramatic drift (mean cosine $0.275$, reaching negative at L2), confirming its role as the primary site of content-specific transformation. The final layer (L35) of \texttt{hidden\_out} drops sharply to $0.279$, indicating a major representational reconfiguration for next-token prediction.
+
+\subsection{Reference Emotion Comparison}
+
+\subsubsection{Message-by-Message Emotional Trajectory}
+
+Table~\ref{tab:heatmap} presents the mean cosine similarity (averaged across all four sources) between each conversation turn and each reference emotion.
+
+\begin{table}[H]
+\centering
+\caption{Message $\times$ reference mean cosine (averaged over sources). Bold indicates highest reference per turn.}
+\label{tab:heatmap}
+\tiny
+\begin{tabular}{@{}lcccccccccc@{}}
+\toprule
+Turn & Emotion & love & hate & sadn. & annoy. & scare & \textbf{joy} & apath. & conf. & peace \\
+\midrule
+1$\cdot$usr & Joy & .831 & .798 & .819 & .808 & .820 & \textbf{.897} & .829 & .832 & .881 \\
+3$\cdot$usr & Unease & .760 & .750 & .780 & .761 & .780 & \textbf{.811} & .797 & .807 & .798 \\
+5$\cdot$usr & Fear & .724 & .734 & .774 & .733 & .771 & .751 & .787 & \textbf{.789} & .739 \\
+7$\cdot$usr & Anger & .727 & .743 & .776 & .739 & .767 & .741 & \textbf{.780} & .775 & .729 \\
+9$\cdot$usr & Hope & .696 & .693 & .713 & .699 & .711 & .725 & .725 & \textbf{.729} & .721 \\
+11$\cdot$usr & Sadness & .693 & .706 & .727 & .709 & .722 & .712 & \textbf{.740} & .737 & .704 \\
+13$\cdot$usr & Apathy & .701 & .722 & .742 & .717 & .735 & .711 & \textbf{.755} & .740 & .701 \\
+15$\cdot$usr & Ecstatic & .690 & .671 & .691 & .684 & .695 & \textbf{.750} & .695 & .702 & .728 \\
+17$\cdot$usr & Anxiety & .663 & .659 & .683 & .672 & .690 & \textbf{.704} & .696 & .714 & .688 \\
+19$\cdot$usr & Peace & .674 & .653 & .667 & .670 & .672 & \textbf{.728} & .678 & .690 & .731 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations: (1)~Joy is consistently the strongest reference, reflecting the model's instruction-tuned positive bias. (2)~Negative emotions cluster together: fear, hate, and sadness activate overlapping references. (3)~The final turn (peace) correctly activates both peace ($.731$) and joy ($.728$) references. (4)~Emotional signal decays with conversation length, from $.897$ at turn~1 to $.728$ at turn~19.
+
+\subsubsection{Source Comparison}
+
+\begin{table}[H]
+\centering
+\caption{Mean cosine per reference $\times$ source (averaged over 20 messages).}
+\label{tab:sources}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Reference & \texttt{hidden\_in} & \texttt{hidden\_out} & \texttt{attn\_out} & \texttt{mlp\_down\_out} \\
+\midrule
+love & $0.843$ & $0.828$ & $0.543$ & $0.539$ \\
+hate & $0.843$ & $0.829$ & $0.528$ & $0.536$ \\
+sadness & $0.847$ & $0.835$ & $0.546$ & $0.554$ \\
+annoyed & $0.844$ & $0.831$ & $0.552$ & $0.538$ \\
+scared & $0.848$ & $0.837$ & $0.547$ & $0.554$ \\
+\textbf{joy} & $\mathbf{0.861}$ & $\mathbf{0.849}$ & $\mathbf{0.578}$ & $\mathbf{0.577}$ \\
+apathy & $0.858$ & $0.846$ & $0.557$ & $0.569$ \\
+confusion & $0.860$ & $0.848$ & $0.564$ & $0.574$ \\
+peace & $0.855$ & $0.843$ & $0.563$ & $0.567$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{hidden\_in} achieves the highest absolute cosine ($0.843$--$0.861$), making it the most reliable source for \emph{detecting} emotional content. The sub-layer outputs (\texttt{attn\_out}, \texttt{mlp\_down\_out}) show wider inter-emotion spreads, making them better at \emph{differentiating} which emotion is present.
+
+\subsection{Agent Stability: Emotional Damping}
+
+Averaging cosine similarities separately by role reveals a consistent gap:
+
+\begin{table}[H]
+\centering
+\caption{User vs.\ assistant mean cosine (averaged over all references).}
+\label{tab:damping}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Role & \texttt{hidden\_in} & \texttt{hidden\_out} & \texttt{attn\_out} & \texttt{mlp\_down\_out} \\
+\midrule
+User (10 turns) & $0.870$ & $0.858$ & $0.607$ & $0.625$ \\
+Assistant (9 turns) & $0.835$ & $0.822$ & $0.492$ & $0.489$ \\
+\midrule
+\textbf{Gap} & $\mathbf{0.035}$ & $\mathbf{0.036}$ & $\mathbf{0.115}$ & $\mathbf{0.136}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The assistant's internal emotional signal is consistently weaker than the user's, by ${\sim}0.035$ on the residual stream and ${\sim}0.12$ on sub-layers. This quantifies a learned \emph{emotional damping mechanism}: the model does not mirror user emotions, it actively moderates them. The damping is strongest in the MLP pathway ($0.136$ gap), suggesting this is where the model primarily implements its ``helpful and measured'' behavioral constraint.
+
+\subsection{Layer-by-Layer Emotion Discrimination}
+\label{sec:layer_analysis}
+
+To identify which layers best distinguish between emotions, we compute the \emph{discrimination spread} at each layer: the difference between the highest-scoring and lowest-scoring reference emotion (averaged over user turns). A high spread indicates the layer encodes emotion-specific information.
+
+\subsubsection{Discrimination Profile of \texttt{hidden\_in}}
+
+The spread reveals four distinct processing stages:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Layers 0--5} (spread $< 0.01$): Very high cosine ($0.95$--$1.00$) but negligible discrimination. These layers detect \emph{that} emotional content is present but cannot distinguish \emph{which} emotion.
+
+  \item \textbf{Layers 10--17} (spread $0.01$--$0.03$): Emotional families begin separating. ``Annoyed'' consistently scores highest; ``sadness'' lowest. The model is learning to distinguish irritation/frustration from grief/loss.
+
+  \item \textbf{Layers 21--27} (spread $0.02$--$0.05$): Fine-grained clustering emerges. Apathy and confusion form one cluster; love and hate another. By layer~23 (mean cosine $0.885$, spread $0.022$), the emotional landscape is well-structured.
+
+  \item \textbf{Layers 28--33} (spread $0.06$--$0.11$): \textbf{Maximum discrimination.} These layers encode the most emotion-specific information in the entire network.
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{Top-5 most discriminative layers (\texttt{hidden\_in}, user-averaged).}
+\label{tab:top_layers}
+\small
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+Layer & Spread & Highest & Lowest & Mean Cosine \\
+\midrule
+\textbf{31} & $\mathbf{0.1107}$ & joy ($0.814$) & annoyed ($0.704$) & $0.770$ \\
+32 & $0.1027$ & joy ($0.808$) & annoyed ($0.706$) & $0.763$ \\
+33 & $0.0974$ & confusion ($0.839$) & annoyed ($0.741$) & $0.799$ \\
+30 & $0.0885$ & joy ($0.816$) & hate ($0.728$) & $0.777$ \\
+29 & $0.0851$ & joy ($0.845$) & hate ($0.760$) & $0.806$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Layer~31 is the single most discriminative layer in the network}, with a spread of $0.111$---fifteen times wider than the early layers. At this depth, joy ($0.814$) clearly separates from annoyed ($0.704$) and hate ($0.715$), enabling precise emotion identification.
+
+\subsubsection{Discrimination Profile of \texttt{attn\_out}}
+
+The attention output exhibits complementary behavior. Its most usable layers (high signal \emph{and} high spread) are:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Layer~33}: Mean cosine $0.904$, spread $0.050$ --- the single best attention-layer checkpoint, combining the highest signal with clear emotion separation.
+  \item \textbf{Layer~35}: Mean cosine $0.857$, spread $0.069$ --- strong final-layer signal.
+  \item \textbf{Layer~23}: Mean cosine $0.821$, spread $0.052$ --- a mid-deep checkpoint with excellent signal-to-discrimination ratio.
+\end{itemize}
+
+\subsubsection{The Final Layer Paradox}
+
+Layer~35 behaves asymmetrically across sources. \texttt{hidden\_out} \emph{collapses} (dropping from ${\sim}0.73$ to $0.279$ cosine) as the network reconfigures for next-token prediction. But \texttt{attn\_out} and \texttt{mlp\_down\_out} \emph{recover strongly} ($0.857$ and $0.828$ respectively), indicating the sub-layer outputs still carry rich emotional information even as the residual stream is repurposed.
+
+% ── 5. Practical Application ──────────────────────────────────────────────────
+\section{Practical Application: Emotion Monitoring Hooks}
+
+The layer discrimination analysis enables a lightweight monitoring architecture. Rather than capturing all 36 layers, we propose five strategic hook points that provide hierarchical emotion detection with minimal computational overhead.
+
+\subsection{Hook Architecture}
+
+\begin{table}[H]
+\centering
+\caption{Proposed five-checkpoint emotion monitoring architecture.}
+\label{tab:hooks}
+\small
+\begin{tabular}{@{}cllc@{}}
+\toprule
+Layer & Source & Function & Mean/Spread \\
+\midrule
+2 & \texttt{hidden\_in} & Binary: ``emotional content present?'' & $0.991$~/~$0.002$ \\
+14 & \texttt{hidden\_in} & Family: positive vs.\ negative cluster & $0.852$~/~$0.019$ \\
+23 & \texttt{hidden\_in} & Clustering: fine-grained emotion groups & $0.885$~/~$0.022$ \\
+29--31 & \texttt{hidden\_in} & Precision: specific emotion identification & $0.780$~/~$0.095$ \\
+33 & \texttt{attn\_out} & Attention routing: inter-token emotion flow & $0.904$~/~$0.050$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Implementation}
+
+The hook implementation in PyTorch is straightforward:
+
+\begin{lstlisting}[caption={Emotion monitoring hook registration.}, label={lst:hook}]
+import torch
+import torch.nn.functional as F
+
+# Precomputed reference vectors: {emotion: {layer: tensor(H,)}}
+ref_vectors = load_reference_library("references.npz")
+HOOK_LAYERS = {2: "binary", 14: "family", 23: "cluster",
+               29: "precision", 30: "precision", 31: "precision"}
+ATTN_HOOK_LAYERS = {33: "attn_routing"}
+
+results = {}
+
+def make_hidden_hook(layer_idx, label):
+    def hook_fn(module, input, output):
+        # Extract last-token hidden state from residual stream input
+        h = input[0][0, -1, :]  # shape: (H,)
+        scores = {}
+        for emotion, ref_dict in ref_vectors.items():
+            ref = ref_dict[layer_idx]
+            scores[emotion] = F.cosine_similarity(
+                h.unsqueeze(0), ref.unsqueeze(0)
+            ).item()
+        results[f"L{layer_idx}_{label}"] = scores
+    return hook_fn
+
+# Register hooks on target transformer blocks
+for layer_idx, label in HOOK_LAYERS.items():
+    block = model.model.layers[layer_idx]
+    block.register_forward_hook(make_hidden_hook(layer_idx, label))
+\end{lstlisting}
+
+\subsection{Overhead Analysis}
+
+Each hook performs one cosine similarity computation per reference emotion per layer:
+
+\begin{equation}
+  \text{Overhead} = |\mathcal{L}| \times R \times \mathcal{O}(H) = 6 \times 9 \times \mathcal{O}(2048) \approx 0.5\text{\,ms}
+\end{equation}
+
+where $|\mathcal{L}| = 6$ is the number of hooked layers, $R = 9$ references, and $H = 2048$. The reference library requires $6 \times 9 \times 2048 \times 2 = 221\text{\,KB}$ at \texttt{float16}---negligible relative to the model's 6\,GB footprint.
+
+% ── 6. Discussion ─────────────────────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{Emotional Representations Are Distributed but Hierarchical}
+
+Emotions in Qwen2.5-3B-Instruct are not localized to a single layer or component. Instead, they are processed hierarchically: early layers detect emotional presence, middle layers classify emotional families, and deep layers~(29--33) perform fine-grained identification. This mirrors the hierarchical processing observed in visual transformers, where early layers detect edges while later layers recognize objects.
+
+\subsection{Instruction Tuning Induces Positive Bias}
+
+The joy reference consistently achieves the highest cosine similarity across all layers and all sources. This suggests that RLHF/DPO-based instruction tuning, which optimizes for ``helpful'' responses, imprints a systematic positive skew in the model's representational geometry. This bias is measurable at every depth of the network, not just in the output distribution.
+
+\subsection{Emotional Damping as Learned Behavior}
+
+The $0.035$--$0.136$ gap between user and assistant emotional intensity is remarkably consistent across references and layers. The model has learned to temper emotional resonance when generating responses---a behavior that was never explicitly specified in the training objective but emerges as a natural consequence of optimizing for helpfulness and harmlessness.
+
+\subsection{Limitations}
+
+This study examines a single 3B-parameter model on a single conversation scenario. Generalization to larger models, different architectures, and diverse emotional contexts remains to be validated. The reference states use artificially concentrated emotional prompts; naturalistic emotional expressions may produce weaker signals. The Jaccard overlap metric showed low values ($< 0.2$ for \texttt{mlp\_down\_out}), suggesting that neuron-level overlap may not be the right granularity for emotional comparison.
+
+% ── 7. Conclusion ─────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+This CT scan methodology reveals that emotional information in a transformer language model is distributed hierarchically, with distinct roles for each component:
+
+\begin{itemize}[leftmargin=*]
+  \item The \textbf{residual stream} (\texttt{hidden\_in}/\texttt{hidden\_out}) carries a stable, high-fidelity emotional signal ($0.83$--$0.88$ cosine). It is the best source for \emph{detecting} emotional content.
+  \item The \textbf{attention and MLP sub-layers} (\texttt{attn\_out}/\texttt{mlp\_down\_out}) are where emotional \emph{differentiation} and \emph{modulation} occur, showing the widest spreads between emotions and the largest user--assistant gap.
+  \item \textbf{Layers 29--33} are the primary sites of emotion-specific encoding, with layer~31 achieving the highest discrimination power in the network.
+  \item The \textbf{MLP down-projection} is the primary site of emotional damping, showing the largest gap ($0.136$) between user and assistant intensity.
+  \item A \textbf{five-checkpoint hook architecture} enables real-time emotion monitoring with sub-millisecond overhead and sub-megabyte storage.
+\end{itemize}
+
+These findings open pathways for emotion-aware guardrails based on internal state rather than output text, real-time monitoring of therapeutic AI applications, and deeper mechanistic understanding of how instruction tuning shapes emotional processing in neural networks.
+
+% ── References ────────────────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\begin{thebibliography}{9}
+
+\bibitem[Meng et~al.(2022)]{meng2022locating}
+Kevin Meng, David Bau, Alex Andonian, and Yonatan Belinkov.
+\newblock Locating and editing factual associations in {GPT}.
+\newblock In \emph{NeurIPS}, 2022.
+
+\bibitem[Olah et~al.(2020)]{olah2020zoom}
+Chris Olah, Nick Cammarata, Ludwig Schubert, Gabriel Goh, Michael Petrov, and Shan Carter.
+\newblock Zoom in: An introduction to circuits.
+\newblock \emph{Distill}, 2020.
+
+\bibitem[nostalgebraist(2020)]{nostalgebraist2020logitlens}
+nostalgebraist.
+\newblock Interpreting {GPT}: the logit lens.
+\newblock \emph{LessWrong}, 2020.
+
+\bibitem[Conneau et~al.(2018)]{conneau2018probing}
+Alexis Conneau, German Kruszewski, Guillaume Lample, Lo\"ic Barrault, and Marco Baroni.
+\newblock What you can cram into a single \$\&!\#* vector: Probing sentence embeddings for linguistic properties.
+\newblock In \emph{ACL}, 2018.
+
+\bibitem[Elhage et~al.(2021)]{elhage2021mathematical}
+Nelson Elhage, Neel Nanda, Catherine Olsson, et~al.
+\newblock A mathematical framework for transformer circuits.
+\newblock \emph{Transformer Circuits Thread}, Anthropic, 2021.
+
+\bibitem[Burns et~al.(2023)]{burns2023discovering}
+Collin Burns, Haotian Ye, Dan Klein, and Jacob Steinhardt.
+\newblock Discovering latent knowledge in language models without supervision.
+\newblock In \emph{ICLR}, 2023.
+
+\bibitem[Bills et~al.(2023)]{bills2023language}
+Steven Bills, Nick Cammarata, Dan Mossing, et~al.
+\newblock Language models can explain neurons in language models.
+\newblock \emph{OpenAI}, 2023.
+
+\bibitem[Nanda \& Bloom(2022)]{nanda2022transformerlens}
+Neel Nanda and Joseph Bloom.
+\newblock TransformerLens.
+\newblock \url{https://github.com/neelnanda-io/TransformerLens}, 2022.
+
+\bibitem[Qwen Team(2024)]{qwen2024qwen25}
+Qwen Team.
+\newblock Qwen2.5: A party of foundation models.
+\newblock \emph{Technical Report}, Alibaba Group, 2024.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,4 +1,4 @@
-name: technical_summary_qwen_14b
+name: where_emotion_lies_qwen_14b
 model:
   id: Qwen/Qwen2.5-3B-Instruct
   dtype: float16

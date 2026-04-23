@@ -627,7 +627,7 @@ def generate_html_report(
                           }} }} }},
               scales: {{
                 x: {{ title: {{ display: true, text: 'Message (index·role)' }} }},
-                y: {{ title: {{ display: true, text: 'Mean cosine' }} }}
+                y: {{ title: {{ display: true, text: 'Mean cosine'}}, min: 0, max: 1 }}
               }}
             }}
           }});"""
@@ -676,7 +676,7 @@ def generate_html_report(
               plugins: {{ legend: {{ position: 'top' }} }},
               scales: {{
                 x: {{ title: {{ display: true, text: 'Layer' }} }},
-                y: {{ title: {{ display: true, text: 'Cosine' }} }}
+                y: {{ title: {{ display: true, text: 'Cosine' }}, min: 0, max: 1 }}
               }}
             }}
           }});"""
