@@ -10,6 +10,7 @@ The core research paradigm is **scenario-driven activation capture**: define a c
 
 - [Install](#install)
 - [Quickstart](#quickstart)
+- [Experiments](#experiments)
 - [Scenario YAML format](#scenario-yaml-format)
   - [model](#model)
   - [prompt](#prompt)
@@ -67,6 +68,38 @@ First run downloads the model weights into `~/.cache/huggingface`. Output lands 
 python notebooks/compare_runs.py
 # → results/latest_output.html
 ```
+---
+
+## Experiments
+
+### Where Emotions Lie Inside a Neural Network
+
+![Emotion Layers](published/emotion-layers.png)
+
+Run experiment
+```
+activation-lab run scenarios/inject/where_emotions_lie_qwen_2.5_3b.yaml
+python notebooks/compare_runs.py      
+```
+
+The experiment: I fed Qwen 2.5 (3B) a 20-turn conversation where the user swings wildly between joy, fear, anger, sadness, apathy, and peace. At every turn, I scanned the AI's internal state and compared it against emotional fingerprints.
+
+Here's what I found:
+
+1. The AI has an emotional backbone. The residual stream — the main information highway — maintains 0.83–0.88 cosine similarity to emotional references at all times. It always knows the emotional temperature of the conversation.
+
+2. Emotions are sharpest at layers 29–33. Early layers detect that emotion exists. Middle layers sort positive from negative. But it's the deep layers where the network actually decides "this is joy, not sadness." Layer 31 is the single most discriminative layer in the entire network.
+
+3. The AI has a built-in shock absorber. When the user is emotionally intense, the assistant's internal state shifts toward that emotion — but never all the way. The gap is consistent: ~0.03 on the backbone, ~0.13 on the deeper processing centers. It acknowledges your feelings while staying calm. Nobody trained it to do this explicitly. It learned it.
+
+4. Joy is the default setting. Even during angry and sad turns, the joy reference scored highest. Instruction tuning didn't just make the model helpful — it shifted its entire internal geometry toward positivity.
+
+5. Emotional memory fades. First message: 0.90 cosine with its matching emotion. By message 19: only 0.67–0.73. Longer conversations dilute the signal.
+
+The practical part? You don't need to scan all 36 layers. Five strategic hooks, at layers 2, 14, 23, 29–31, and 33 — give you hierarchical emotion detection from "is this emotional?" to "which exact emotion?" with under 1ms overhead.
+This opens the door to monitoring AI conversations by what the model is thinking, not just what it says.
+
+![User Conversation Average vs. References](published/average-vs-references-user-snapshots.png)
 
 ---
 
