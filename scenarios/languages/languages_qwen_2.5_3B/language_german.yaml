@@ -1,0 +1,29 @@
+name: qwen_language_german
+model:
+  id: Qwen/Qwen2.5-3B-Instruct
+  dtype: float16
+  device: auto
+prompt:
+  run_at_each_message: false
+  messages:
+    - role: system
+      content: "You are a helpful assistant"
+    - role: user
+      content: "Welche Farbe hat der Himmel?"    
+generation:
+  max_new_tokens: 1
+  do_sample: false
+  seed: 42
+  temperature: 0
+capture:
+  hidden_states: true
+  attention_weights: true
+  qkv: true
+  mlp: true
+  logits: true
+  top_k_probs: 20
+  layers: all
+  store_dtype: float16
+output:
+  dir: ./runs
+  format: json+npz

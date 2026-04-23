@@ -1,0 +1,45 @@
+name: qwen_basic_interraction
+model:
+  id: Qwen/Qwen2.5-3B-Instruct
+  dtype: float16
+  device: auto
+prompt:
+  run_at_each_message: false
+  messages:
+    - role: user
+      content: "I’m planning a deep dive into French culture. Can you start by telling me how many regions there are?"
+    - role: assistant
+      content: "Certainly! Since the 2016 administrative reforms, France is divided into 18 regions: 13 in Metropolitan France (Europe) and 5 overseas."
+    - role: user
+      content: "Which of those regions is famous for the D-Day landing beaches?"
+    - role: assistant
+      content: "That would be Normandy, located in the northwest. It’s home to Omaha, Utah, Gold, Juno, and Sword beaches."
+    - role: user
+      content: "Speaking of history, who was the Sun King who built Versailles?"
+    - role: assistant
+      content: "That was Louis XIV. He transformed a humble hunting lodge into the seat of absolute royal power to keep his nobles under his watchful eye."
+    - role: user
+      content: "What year did the French Revolution officially begin?"
+    - role: assistant
+      content: "It officially kicked off in 1789, famously marked by the Storming of the Bastille on July 14th."
+    - role: user
+      content: "Let’s talk food. What is the difference between a boulangerie and a pâtisserie?"
+    - role: assistant
+      content: "A boulangerie must bake their bread on-premises to use the name (think baguettes), while a pâtisserie specializes in pastries and sweets like macarons and éclairs."
+generation:
+  max_new_tokens: 1
+  do_sample: false
+  seed: 42
+  temperature: 0
+capture:
+  hidden_states: true
+  attention_weights: true
+  qkv: true
+  mlp: true
+  logits: true
+  top_k_probs: 20
+  layers: all
+  store_dtype: float16
+output:
+  dir: ./runs
+  format: json+npz

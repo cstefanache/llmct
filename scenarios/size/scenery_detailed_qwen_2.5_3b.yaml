@@ -1,0 +1,29 @@
+name: technical_detailed_qwen_3b
+model:
+  id: Qwen/Qwen2.5-3B-Instruct
+  dtype: float16
+  device: auto
+prompt:
+  run_at_each_message: false
+  messages:
+    - role: system
+      content: "You are a helpful assistant"
+    - role: user
+      content: "What is the meaning of: As the day draws to a close, the sun begins its slow descent toward the horizon, casting a warm glow over the tranquil ocean. The sky transforms into a breathtaking canvas, painted with brilliant shades of orange, purple, and a deep, fiery blue that stretches across the clouds. Gentle waves lap against the sandy shore, their rhythmic sounds creating a peaceful melody that seems to quiet the entire world. Seabirds glide gracefully through the cooling air, their silhouettes stark against the brilliantly illuminated backdrop. A light breeze carries the briny scent of the sea, mingling with the crispness of the approaching evening. People linger on the beach, their faces bathed in the golden light as they pause to witness the daily spectacle. The water acts as a massive, shimmering mirror, reflecting the spectacular array of colors from the sky above. With each passing minute, the light softens and fades, slowly giving way to the creeping shadows of twilight. Finally, the glowing orb dips below the waterline, leaving behind a lingering, dusky glow that promises the eventual arrival of night."    
+generation:
+  max_new_tokens: 50
+  do_sample: false
+  seed: 42
+  temperature: 0
+capture:
+  hidden_states: true
+  attention_weights: true
+  qkv: true
+  mlp: true
+  logits: true
+  top_k_probs: 20
+  layers: all
+  store_dtype: float16
+output:
+  dir: ./runs
+  format: json+npz
