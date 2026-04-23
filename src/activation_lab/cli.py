@@ -7,14 +7,65 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .generation import run_generation
+from .generation import capture_reference_prefill, run_generation
 from .heatmap import HeatmapRequest, generate as generate_heatmaps
 from .models import load_model
 from .scenario import ModelConfig, Scenario, load_scenario
-from .serialize import make_run_dir, write_run_manifest, write_step, write_steps_json
+from .serialize import (
+    make_run_dir,
+    write_conversation_snapshot,
+    write_conversation_snapshot_index,
+    write_reference_index,
+    write_reference_state,
+    write_run_manifest,
+    write_step,
+    write_steps_json,
+)
 
 app = typer.Typer(add_completion=False, help="Capture per-step LLM activations.")
 console = Console()
+
+
+def _capture_conversation_snapshots(
+    scenario: Scenario, run_dir, model, tokenizer, arch, device
+) -> None:
+    """Capture a prefill snapshot for each message prefix in the conversation."""
+    messages = scenario.prompt.messages
+    if not messages:
+        return
+    console.print(f"  [bold]Capturing {len(messages)} conversation snapshot(s)...[/bold]")
+    snap_info = []
+    for i, msg in enumerate(messages):
+        prefix = messages[: i + 1]
+        state = capture_reference_prefill(
+            model, tokenizer, arch, prefix, scenario.capture, device
+        )
+        write_conversation_snapshot(run_dir, i, msg.role, state)
+        snap_info.append({
+            "index": i,
+            "role": msg.role,
+            "content_preview": msg.content[:80],
+        })
+    write_conversation_snapshot_index(run_dir, snap_info)
+    console.print(f"  [green]{len(messages)} snapshot(s) saved[/green]")
+
+
+def _capture_reference_states(
+    scenario: Scenario, run_dir, model, tokenizer, arch, device
+) -> None:
+    if not scenario.reference_states:
+        return
+    console.print(f"  [bold]Capturing {len(scenario.reference_states)} reference state(s)...[/bold]")
+    labels: list[str] = []
+    for ref in scenario.reference_states:
+        console.print(f"    [dim]reference '{ref.label}'[/dim]")
+        state = capture_reference_prefill(
+            model, tokenizer, arch, ref.messages, scenario.capture, device
+        )
+        write_reference_state(run_dir, ref.label, state)
+        labels.append(ref.label)
+    write_reference_index(run_dir, labels)
+    console.print(f"  [green]{len(labels)} reference(s) saved[/green]")
 
 
 def _execute_run(scenario: Scenario, model, tokenizer, arch, device, label: str = "") -> None:
@@ -52,6 +103,8 @@ def _execute_run(scenario: Scenario, model, tokenizer, arch, device, label: str 
     write_steps_json(paths, entries)
     console.print(f"[green]Done.[/green] {len(entries)} step(s) written.")
     console.print(f"[bold]Generated:[/bold] {''.join(generated_tokens)!r}")
+    _capture_conversation_snapshots(scenario, paths.root, model, tokenizer, arch, device)
+    _capture_reference_states(scenario, paths.root, model, tokenizer, arch, device)
 
 
 @app.command()

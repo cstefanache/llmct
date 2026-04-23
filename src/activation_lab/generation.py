@@ -9,7 +9,7 @@ import torch
 
 from .capture import CaptureContext
 from .models import ArchInfo
-from .scenario import CaptureConfig, GenerationConfig, PromptConfig
+from .scenario import CaptureConfig, GenerationConfig, Message, PromptConfig
 
 
 @dataclass
@@ -171,3 +171,47 @@ def run_generation(
         if step + 1 >= total_steps:
             break
         cur_input = torch.tensor([[next_id]], device=device, dtype=input_ids.dtype)
+
+
+REFERENCE_SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out"]
+
+
+def capture_reference_prefill(
+    model: torch.nn.Module,
+    tokenizer,
+    arch: ArchInfo,
+    messages: list[Message],
+    cap_cfg: CaptureConfig,
+    device: torch.device,
+) -> dict[str, np.ndarray]:
+    """Run a single prefill pass and return last-token activations per layer.
+
+    Returns {source: (num_layers, hidden_size)} for hidden_in/hidden_out/attn_out/mlp_down_out.
+    """
+    prompt_cfg = PromptConfig(messages=messages, run_at_each_message=False)
+    input_ids = _build_input_ids(tokenizer, prompt_cfg, device)
+
+    with torch.no_grad(), CaptureContext(model, arch, cap_cfg) as ctx:
+        model(
+            input_ids=input_ids,
+            past_key_values=None,
+            use_cache=False,
+            output_attentions=False,
+            return_dict=True,
+        )
+        tensors = ctx.drain()
+
+    result: dict[str, np.ndarray] = {}
+    for src in REFERENCE_SOURCES:
+        layers_arr = []
+        for layer in range(arch.num_layers):
+            key = f"layer_{layer:02d}/{src}"
+            if key in tensors:
+                arr = np.asarray(tensors[key], dtype=np.float32)
+                # shape: (B, T, H) — take last token position
+                vec = arr[0, -1, :] if arr.ndim == 3 else arr.flatten()[:arch.hidden_size]
+            else:
+                vec = np.zeros(arch.hidden_size, dtype=np.float32)
+            layers_arr.append(vec)
+        result[src] = np.stack(layers_arr)  # (num_layers, hidden_size)
+    return result

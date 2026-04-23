@@ -17,6 +17,18 @@ class PromptConfig(BaseModel):
     run_at_each_message: bool = False
 
 
+class ReferenceState(BaseModel):
+    label: str
+    messages: list[Message]
+
+    @field_validator("label")
+    @classmethod
+    def _safe_label(cls, v: str) -> str:
+        if not v or any(c in v for c in "/\\ \t\n"):
+            raise ValueError("label must be non-empty and contain no whitespace or slashes")
+        return v
+
+
 class ModelConfig(BaseModel):
     id: str
     gguf_file: str | None = None
@@ -57,6 +69,7 @@ class Scenario(BaseModel):
     generation: GenerationConfig = GenerationConfig()
     capture: CaptureConfig = CaptureConfig()
     output: OutputConfig = OutputConfig()
+    reference_states: list[ReferenceState] = []
 
     @field_validator("name")
     @classmethod

@@ -11,9 +11,11 @@ Outputs:
   - intra_run_report.csv        — intra-run summary stats per run × source
   - intra_run_cosines.csv       — intra-run per-layer metrics per run × source
 """
+
 from __future__ import annotations
 
 import contextlib
+import json
 import sys
 from datetime import datetime, timezone
 from itertools import combinations
@@ -36,10 +38,12 @@ def initial_state(run: Run, sources: list[str] = RESIDUAL_SOURCES) -> dict[str, 
     """Load prefill step (step 0), last prompt position → {source: (num_layers, hidden_size)}."""
     with run.load_npz(0) as npz:
         return {
-            src: np.stack([
-                np.asarray(npz[f"layer_{layer:02d}/{src}"], dtype=np.float32)[0, -1, :]
-                for layer in range(run.num_layers)
-            ])
+            src: np.stack(
+                [
+                    np.asarray(npz[f"layer_{layer:02d}/{src}"], dtype=np.float32)[0, -1, :]
+                    for layer in range(run.num_layers)
+                ]
+            )
             for src in sources
         }
 
@@ -49,10 +53,12 @@ def final_state(run: Run, sources: list[str] = RESIDUAL_SOURCES) -> dict[str, np
     last_step = run.steps_raw[-1]["step"]
     with run.load_npz(last_step) as npz:
         return {
-            src: np.stack([
-                np.asarray(npz[f"layer_{layer:02d}/{src}"], dtype=np.float32)[0, -1, :]
-                for layer in range(run.num_layers)
-            ])
+            src: np.stack(
+                [
+                    np.asarray(npz[f"layer_{layer:02d}/{src}"], dtype=np.float32)[0, -1, :]
+                    for layer in range(run.num_layers)
+                ]
+            )
             for src in sources
         }
 
@@ -92,41 +98,43 @@ def _compute_metrics(
         mae_vals = np.abs(s1 - s2).mean(axis=-1)
         ovl_vals = overlap_per_layer(s1, s2)
 
-        summary_rows.append({
-            "source": src,
-            "mean_cosine":       round(float(cos_vals.mean()), 4),
-            "std_cosine":        round(float(cos_vals.std()), 4),
-            "median_cosine":     round(float(np.median(cos_vals)), 4),
-            "min_cosine":        round(float(cos_vals.min()), 4),
-            "most_divergent_layer": int(cos_vals.argmin()),
-            "mean_MAE":          round(float(mae_vals.mean()), 4),
-            "std_MAE":           round(float(mae_vals.std()), 4),
-            "median_MAE":        round(float(np.median(mae_vals)), 4),
-            "max_MAE_layer":     int(mae_vals.argmax()),
-            "mean_overlap":      round(float(ovl_vals.mean()), 4),
-            "std_overlap":       round(float(ovl_vals.std()), 4),
-            "median_overlap":    round(float(np.median(ovl_vals)), 4),
-            "min_overlap":       round(float(ovl_vals.min()), 4),
-            "min_overlap_layer": int(ovl_vals.argmin()),
-        })
+        summary_rows.append(
+            {
+                "source": src,
+                "mean_cosine": round(float(cos_vals.mean()), 4),
+                "std_cosine": round(float(cos_vals.std()), 4),
+                "median_cosine": round(float(np.median(cos_vals)), 4),
+                "min_cosine": round(float(cos_vals.min()), 4),
+                "most_divergent_layer": int(cos_vals.argmin()),
+                "mean_MAE": round(float(mae_vals.mean()), 4),
+                "std_MAE": round(float(mae_vals.std()), 4),
+                "median_MAE": round(float(np.median(mae_vals)), 4),
+                "max_MAE_layer": int(mae_vals.argmax()),
+                "mean_overlap": round(float(ovl_vals.mean()), 4),
+                "std_overlap": round(float(ovl_vals.std()), 4),
+                "median_overlap": round(float(np.median(ovl_vals)), 4),
+                "min_overlap": round(float(ovl_vals.min()), 4),
+                "min_overlap_layer": int(ovl_vals.argmin()),
+            }
+        )
 
         for layer in range(num_layers):
-            cosine_rows.append({
-                "source":  src,
-                "layer":   layer,
-                "cosine":  round(float(cos_vals[layer]), 4),
-                "MAE":     round(float(mae_vals[layer]), 4),
-                "overlap": round(float(ovl_vals[layer]), 4),
-            })
+            cosine_rows.append(
+                {
+                    "source": src,
+                    "layer": layer,
+                    "cosine": round(float(cos_vals[layer]), 4),
+                    "MAE": round(float(mae_vals[layer]), 4),
+                    "overlap": round(float(ovl_vals[layer]), 4),
+                }
+            )
 
     summary_df = pd.DataFrame(summary_rows).set_index("source")
     cosines_df = pd.DataFrame(cosine_rows)
     return summary_df, cosines_df
 
 
-def compare_pair(
-    run_a: Run, run_b: Run, state_fn=None
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def compare_pair(run_a: Run, run_b: Run, state_fn=None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return (summary_df, cosines_df) for one inter-run pair and state."""
     if state_fn is None:
         state_fn = initial_state
@@ -150,16 +158,119 @@ def get_step_topk(run: Run) -> list[dict] | None:
         if not raw_top:
             return None
         entries = [
-            {"token": t["token"], "prob": round(float(np.exp(t["logprob"])), 5)}
-            for t in raw_top
+            {"token": t["token"], "prob": round(float(np.exp(t["logprob"])), 5)} for t in raw_top
         ]
-        results.append({
-            "step":            step_info["step"],
-            "kind":            step_info.get("kind", ""),
-            "generated_token": step_info.get("generated_token", "") or "",
-            "top":             entries,
-        })
+        results.append(
+            {
+                "step": step_info["step"],
+                "kind": step_info.get("kind", ""),
+                "generated_token": step_info.get("generated_token", "") or "",
+                "top": entries,
+            }
+        )
     return results or None
+
+
+def load_reference_states(run: Run) -> dict[str, dict[str, np.ndarray]] | None:
+    """Load {label: {source: (num_layers, hidden_size)}} from run's references/ dir."""
+    ref_dir = run.path / "references"
+    index_path = ref_dir / "index.json"
+    if not index_path.exists():
+        return None
+    labels: list[str] = json.loads(index_path.read_text())["labels"]
+    result: dict[str, dict[str, np.ndarray]] = {}
+    for label in labels:
+        npz_path = ref_dir / f"ref_{label}.npz"
+        if not npz_path.exists():
+            continue
+        with np.load(npz_path) as npz:
+            result[label] = {
+                src: np.stack(
+                    [
+                        np.asarray(npz[f"layer_{layer:02d}/{src}"], dtype=np.float32)
+                        for layer in range(run.num_layers)
+                    ]
+                )
+                for src in RESIDUAL_SOURCES
+            }
+    return result or None
+
+
+def load_conversation_snapshots(run: Run) -> list[dict] | None:
+    """Load per-message snapshots from run's conversation_snapshots/ dir.
+
+    Returns list of {index, role, content_preview, state: {source: (num_layers, hidden_size)}},
+    ordered by message index. Returns None if no snapshots exist.
+    """
+    snap_dir = run.path / "conversation_snapshots"
+    index_path = snap_dir / "index.json"
+    if not index_path.exists():
+        return None
+    snap_info: list[dict] = json.loads(index_path.read_text())["snapshots"]
+    result = []
+    for info in snap_info:
+        idx = info["index"]
+        role = info["role"]
+        npz_path = snap_dir / f"snapshot_{idx:02d}_{role}.npz"
+        if not npz_path.exists():
+            continue
+        with np.load(npz_path) as npz:
+            state = {
+                src: np.stack(
+                    [
+                        np.asarray(npz[f"layer_{layer:02d}/{src}"], dtype=np.float32)
+                        for layer in range(run.num_layers)
+                    ]
+                )
+                for src in RESIDUAL_SOURCES
+            }
+        result.append(
+            {
+                "index": idx,
+                "role": role,
+                "content_preview": info.get("content_preview", ""),
+                "state": state,
+            }
+        )
+    return result or None
+
+
+def compute_snapshot_reference_metrics(
+    snapshots: list[dict],
+    ref_states: dict[str, dict[str, np.ndarray]],
+) -> list[dict]:
+    """For each conversation snapshot, compute per-source cosine/MAE/Jaccard vs each reference.
+
+    Returns list of {index, role, content_preview,
+    by_reference: {label: {source: {mean_cosine, mean_MAE, mean_overlap, cosine_per_layer}}}}.
+    """
+    results = []
+    for snap in snapshots:
+        snap_state = snap["state"]
+        by_ref: dict[str, dict] = {}
+        for label, ref_state in ref_states.items():
+            by_src: dict[str, dict] = {}
+            for src in RESIDUAL_SOURCES:
+                s1, s2 = snap_state[src], ref_state[src]
+                cos_vals = cosine_per_layer(s1, s2)
+                mae_vals = np.abs(s1 - s2).mean(axis=-1)
+                ovl_vals = overlap_per_layer(s1, s2)
+                by_src[src] = {
+                    "mean_cosine": float(cos_vals.mean()),
+                    "mean_MAE": float(mae_vals.mean()),
+                    "mean_overlap": float(ovl_vals.mean()),
+                    "cosine_per_layer": [round(float(v), 4) for v in cos_vals],
+                }
+            by_ref[label] = by_src
+        results.append(
+            {
+                "index": snap["index"],
+                "role": snap["role"],
+                "content_preview": snap["content_preview"],
+                "by_reference": by_ref,
+            }
+        )
+    return results
 
 
 def run_label(run: Run, short: bool = False) -> str:
@@ -186,22 +297,24 @@ def generate_html_report(
     intra_report_df: pd.DataFrame,
     intra_cosines_df: pd.DataFrame,
     run_topk: dict[str, list[dict] | None],
+    run_ref_metrics: dict[str, list[dict] | None],
     out_path: Path,
+    latest_path: Path,
 ) -> None:
     """Write a self-contained HTML report from the comparison DataFrames."""
     import html as html_module
     import json
 
     SOURCE_COLORS = {
-        "hidden_in":    "#3b82f6",
-        "hidden_out":   "#10b981",
-        "attn_out":     "#f59e0b",
+        "hidden_in": "#3b82f6",
+        "hidden_out": "#10b981",
+        "attn_out": "#f59e0b",
         "mlp_down_out": "#ef4444",
     }
 
     STATE_LABELS = {
         "initial": "Initial state — prefill, last prompt token",
-        "final":   "Final state — last generation step, last token",
+        "final": "Final state — last generation step, last token",
     }
 
     def cosine_bg(val: float) -> str:
@@ -247,7 +360,9 @@ def generate_html_report(
                 else:
                     bg = _val_color(val, lo, hi, reverse)
                     display = f"{val:{fmt}}"
-                    cells += f'<td class="hm-cell" style="background:{bg}" title="{val}">{display}</td>'
+                    cells += (
+                        f'<td class="hm-cell" style="background:{bg}" title="{val}">{display}</td>'
+                    )
             rows_html += f"<tr><th class='hm-row-hdr'>{_lbl(str(r_lbl))}</th>{cells}</tr>"
         ttl = f"<div class='hm-title'>{html_module.escape(title)}</div>" if title else ""
         return (
@@ -256,18 +371,19 @@ def generate_html_report(
             f"<tbody>{rows_html}</tbody></table></div>"
         )
 
-    pairs = report_df["pair"].unique().tolist()
+    pairs = report_df["pair"].unique().tolist() if not report_df.empty else []
 
-    # ── run×run legend ────────────────────────────────────────────────────────
+    # ── run×run legend (only needed for inter-run sections) ──────────────────
     runs_ordered: list[str] = []
     run_gen: dict[str, str] = {}
-    for _, row in report_df.iterrows():
-        for key, gen_key in (("run_a", "generated_a"), ("run_b", "generated_b")):
-            if row[key] not in run_gen:
-                runs_ordered.append(row[key])
-                run_gen[row[key]] = str(row[gen_key])[:20]
+    if not report_df.empty:
+        for _, row in report_df.iterrows():
+            for key, gen_key in (("run_a", "generated_a"), ("run_b", "generated_b")):
+                if row[key] not in run_gen:
+                    runs_ordered.append(row[key])
+                    run_gen[row[key]] = str(row[gen_key])[:20]
 
-    n_runs  = len(runs_ordered)
+    n_runs = len(runs_ordered)
     run_idx = {r: i for i, r in enumerate(runs_ordered)}
     run_short = [f"R{i + 1}" for i in range(n_runs)]
 
@@ -280,22 +396,23 @@ def generate_html_report(
     run_row_labels = run_short
 
     _run_detail: dict = {}
-    for _, row in report_df.iterrows():
-        ra, rb = row["run_a"], row["run_b"]
-        if ra not in _run_detail:
-            _run_detail[ra] = {
-                "prompt":    str(row.get("prompt_a", "") or ""),
-                "generated": str(row.get("generated_a", "") or ""),
-            }
-        if rb not in _run_detail:
-            _run_detail[rb] = {
-                "prompt":    str(row.get("prompt_b", "") or ""),
-                "generated": str(row.get("generated_b", "") or ""),
-            }
+    if not report_df.empty:
+        for _, row in report_df.iterrows():
+            ra, rb = row["run_a"], row["run_b"]
+            if ra not in _run_detail:
+                _run_detail[ra] = {
+                    "prompt": str(row.get("prompt_a", "") or ""),
+                    "generated": str(row.get("generated_a", "") or ""),
+                }
+            if rb not in _run_detail:
+                _run_detail[rb] = {
+                    "prompt": str(row.get("prompt_b", "") or ""),
+                    "generated": str(row.get("generated_b", "") or ""),
+                }
     runs_js_data = {
         f"R{i + 1}": {
-            "name":      runs_ordered[i],
-            "prompt":    _run_detail.get(runs_ordered[i], {}).get("prompt", ""),
+            "name": runs_ordered[i],
+            "prompt": _run_detail.get(runs_ordered[i], {}).get("prompt", ""),
             "generated": _run_detail.get(runs_ordered[i], {}).get("generated", ""),
         }
         for i in range(n_runs)
@@ -303,10 +420,10 @@ def generate_html_report(
     runs_js_data_json = json.dumps(runs_js_data)
 
     RR_METRICS = [
-        ("mean_cosine",   False, ".3f", "Mean cosine"),
-        ("min_cosine",    False, ".3f", "Min cosine"),
-        ("mean_MAE",      True,  ".3f", "Mean MAE"),
-        ("mean_overlap",  False, ".3f", "Mean overlap"),
+        ("mean_cosine", False, ".3f", "Mean cosine"),
+        ("min_cosine", False, ".3f", "Min cosine"),
+        ("mean_MAE", True, ".3f", "Mean MAE"),
+        ("mean_overlap", False, ".3f", "Mean overlap"),
     ]
 
     # ── shared overview/aggregate/heatmap builders ────────────────────────────
@@ -318,15 +435,14 @@ def generate_html_report(
     def _build_overview_rows(df_s: pd.DataFrame, index_col: str) -> str:
         if df_s.empty:
             return "<tr><td colspan='8'>No data</td></tr>"
-        pivot = (
-            df_s.pivot_table(index=index_col, columns="source", values="mean_cosine")
-            .reindex(columns=RESIDUAL_SOURCES)
+        pivot = df_s.pivot_table(index=index_col, columns="source", values="mean_cosine").reindex(
+            columns=RESIDUAL_SOURCES
         )
         rows = ""
         for label, row in pivot.iterrows():
             vals = [row[s] for s in RESIDUAL_SOURCES]
-            row_mean   = float(np.mean(vals))
-            row_std    = float(np.std(vals))
+            row_mean = float(np.mean(vals))
+            row_std = float(np.std(vals))
             row_median = float(np.median(vals))
             source_cells = "".join(
                 f'<td style="background:{cosine_bg(row[s])}">{row[s]:.4f}</td>'
@@ -344,11 +460,13 @@ def generate_html_report(
         agg_rows_html = ""
         for src in RESIDUAL_SOURCES:
             src_df = df_s[df_s["source"] == src]
+
             def _agg(col: str, _df=src_df) -> str:
                 s = _df[col].dropna()
                 if s.empty:
                     return "—"
                 return f"{s.mean():.4f} ± {s.std():.4f}"
+
             agg_rows_html += (
                 f"<tr><td>{src}</td>"
                 f"<td>{_agg('mean_cosine')}</td><td>{_agg('std_cosine')}</td><td>{_agg('median_cosine')}</td>"
@@ -361,7 +479,7 @@ def generate_html_report(
     def _build_rr_sections(df_s: pd.DataFrame) -> str:
         rr_html = ""
         for src in RESIDUAL_SOURCES:
-            src_df  = df_s[df_s["source"] == src]
+            src_df = df_s[df_s["source"] == src]
             hms_html = ""
             for col, reverse, fmt, label in RR_METRICS:
                 mat = [[None] * n_runs for _ in range(n_runs)]
@@ -372,7 +490,9 @@ def generate_html_report(
                         v = float(row[col])
                         mat[i][j] = v
                         mat[j][i] = v
-                flat = [mat[i][j] for i in range(n_runs) for j in range(n_runs) if mat[i][j] is not None]
+                flat = [
+                    mat[i][j] for i in range(n_runs) for j in range(n_runs) if mat[i][j] is not None
+                ]
                 lo = min(flat) if flat else 0.0
                 hi = max(flat) if flat else 1.0
                 if col in ("mean_cosine", "min_cosine"):
@@ -384,16 +504,18 @@ def generate_html_report(
     pair_short_labels = []
     for pair in pairs:
         pr = report_df[report_df["pair"] == pair]
-        ga = str(pr["generated_a"].iloc[0])[:16]
-        gb = str(pr["generated_b"].iloc[0])[:16]
+        ga = str(pr["generated_a"].iloc[0])[:16] if not pr.empty else ""
+        gb = str(pr["generated_b"].iloc[0])[:16] if not pr.empty else ""
         pair_short_labels.append(f"{ga} / {gb}")
 
-    def _build_layer_sections(df_cosines: pd.DataFrame, row_keys: list[str], row_labels: list[str], key_col: str) -> str:
+    def _build_layer_sections(
+        df_cosines: pd.DataFrame, row_keys: list[str], row_labels: list[str], key_col: str
+    ) -> str:
         layer_html = ""
         for src in RESIDUAL_SOURCES:
-            src_cos    = df_cosines[df_cosines["source"] == src]
+            src_cos = df_cosines[df_cosines["source"] == src]
             all_layers = sorted(src_cos["layer"].unique().tolist())
-            n_layers   = len(all_layers)
+            n_layers = len(all_layers)
 
             cos_mat, mae_mat, ovl_mat = [], [], []
             for key in row_keys:
@@ -401,7 +523,9 @@ def generate_html_report(
                 if len(pc) == n_layers:
                     cos_mat.append(pc["cosine"].tolist())
                     mae_mat.append(pc["MAE"].tolist())
-                    ovl_mat.append(pc["overlap"].tolist() if "overlap" in pc.columns else [None] * n_layers)
+                    ovl_mat.append(
+                        pc["overlap"].tolist() if "overlap" in pc.columns else [None] * n_layers
+                    )
                 else:
                     cos_mat.append([None] * n_layers)
                     mae_mat.append([None] * n_layers)
@@ -410,9 +534,9 @@ def generate_html_report(
             flat_cos = [v for row in cos_mat for v in row if v is not None]
             flat_mae = [v for row in mae_mat for v in row if v is not None]
             flat_ovl = [v for row in ovl_mat for v in row if v is not None]
-            cos_lo  = min(flat_cos) if flat_cos else 0.0
-            mae_hi  = max(flat_mae) if flat_mae else 1.0
-            ovl_lo  = min(flat_ovl) if flat_ovl else 0.0
+            cos_lo = min(flat_cos) if flat_cos else 0.0
+            mae_hi = max(flat_mae) if flat_mae else 1.0
+            ovl_lo = min(flat_ovl) if flat_ovl else 0.0
 
             layer_labels = [str(li) for li in all_layers]
             hms_html = (
@@ -423,29 +547,358 @@ def generate_html_report(
                 f"<div class='hm-item hm-full'>"
                 f"{_heatmap_table(ovl_mat, row_labels, layer_labels, ovl_lo, 1.0, False, '.3f', 'Top-1% overlap per layer')}</div>"
             )
-            layer_html += f"<h3 class='src-heading'>{src}</h3><div class='hm-grid hm-grid-2'>{hms_html}</div>"
+            layer_html += (
+                f"<h3 class='src-heading'>{src}</h3><div class='hm-grid hm-grid-2'>{hms_html}</div>"
+            )
         return layer_html
 
-    # ── inter-run sections ────────────────────────────────────────────────────
-    overview_rows_initial = _build_overview_rows(report_df[report_df["state"] == "initial"], "pair")
-    overview_rows_final   = _build_overview_rows(report_df[report_df["state"] == "final"],   "pair")
-    agg_rows_initial      = _build_agg_rows(report_df[report_df["state"] == "initial"])
-    agg_rows_final        = _build_agg_rows(report_df[report_df["state"] == "final"])
-    rr_sections_initial   = _build_rr_sections(report_df[report_df["state"] == "initial"])
-    rr_sections_final     = _build_rr_sections(report_df[report_df["state"] == "final"])
-    layer_sections_initial = _build_layer_sections(
-        cosines_df[cosines_df["state"] == "initial"], pairs, pair_short_labels, "pair"
-    )
-    layer_sections_final = _build_layer_sections(
-        cosines_df[cosines_df["state"] == "final"], pairs, pair_short_labels, "pair"
-    )
+    # ── reference comparison builder ──────────────────────────────────────────
+    _REF_PALETTE = [
+        "#e11d48",
+        "#7c3aed",
+        "#0ea5e9",
+        "#f97316",
+        "#10b981",
+        "#f59e0b",
+        "#6366f1",
+        "#ec4899",
+        "#14b8a6",
+        "#84cc16",
+    ]
+
+    _ROLE_COLORS = {"system": "#94a3b8", "user": "#2563eb", "assistant": "#16a34a"}
+
+    def _build_ref_comparison_block(ref_metrics: list[dict], card_idx: int) -> tuple[str, str]:
+        """Return (html, js) for the reference state comparison section of an intra-run card.
+
+        ref_metrics is a list of conversation snapshot entries, each with:
+          {index, role, content_preview, by_reference: {label: {source: {...}}}}
+        """
+        if not ref_metrics:
+            return "", ""
+
+        all_labels = list(ref_metrics[0]["by_reference"].keys())
+        msg_indices = [m["index"] for m in ref_metrics]
+        msg_roles = [m["role"] for m in ref_metrics]
+        msg_previews = [m.get("content_preview", "") for m in ref_metrics]
+        pid = f"ref{card_idx}"
+
+        # x-axis labels: "0·sys", "1·usr", "2·ast", ...
+        role_abbr = {"system": "sys", "user": "usr", "assistant": "ast"}
+        x_labels = [f"{i}·{role_abbr.get(r, r[:3])}" for i, r in zip(msg_indices, msg_roles)]
+
+        # ── per-message charts: mean cosine per message per reference (4 charts, one per source) ──
+        src_chart_html = ""
+        src_chart_js = ""
+        for si, src in enumerate(RESIDUAL_SOURCES):
+            cid = f"{pid}_{si}"
+            datasets = []
+            for li, label in enumerate(all_labels):
+                color = _REF_PALETTE[li % len(_REF_PALETTE)]
+                data = [round(m["by_reference"][label][src]["mean_cosine"], 4) for m in ref_metrics]
+                datasets.append(
+                    {
+                        "label": label,
+                        "data": data,
+                        "borderColor": color,
+                        "backgroundColor": color + "22",
+                        "tension": 0.4,
+                        "pointRadius": 5,
+                        "pointHoverRadius": 7,
+                    }
+                )
+            chart_data = json.dumps({"labels": x_labels, "datasets": datasets})
+            src_chart_html += (
+                f"<div class='chart-wrap'><h4>{html_module.escape(src)}</h4>"
+                f"<canvas id='chart_{cid}'></canvas></div>"
+            )
+            src_chart_js += f"""
+          new Chart(document.getElementById('chart_{cid}'), {{
+            type: 'line', data: {chart_data},
+            options: {{
+              animation: false, maintainAspectRatio: false,
+              plugins: {{ legend: {{ position: 'top' }},
+                          tooltip: {{ callbacks: {{
+                            afterTitle: function(items) {{
+                              const idx = items[0].dataIndex;
+                              const previews = {json.dumps(msg_previews)};
+                              return previews[idx] ? previews[idx].substring(0, 60) : '';
+                            }}
+                          }} }} }},
+              scales: {{
+                x: {{ title: {{ display: true, text: 'Message (index·role)' }} }},
+                y: {{ title: {{ display: true, text: 'Mean cosine' }} }}
+              }}
+            }}
+          }});"""
+
+        # ── layer-level charts per snapshot (collapsed details, one per message) ──
+        num_layers = len(
+            next(iter(next(iter(ref_metrics[0]["by_reference"].values())).values()))[
+                "cosine_per_layer"
+            ]
+        )
+        layer_labels = list(range(num_layers))
+
+        layer_details_html = ""
+        layer_details_js = ""
+        for mi, m in enumerate(ref_metrics):
+            role_color = _ROLE_COLORS.get(m["role"], "#64748b")
+            msg_label = html_module.escape(f"[{m['role']}] {m['content_preview'][:60]}")
+            layer_row_html = ""
+            layer_row_js = ""
+            for si, src in enumerate(RESIDUAL_SOURCES):
+                cid = f"{pid}_m{mi}_lyr{si}"
+                datasets = []
+                for li, label in enumerate(all_labels):
+                    color = _REF_PALETTE[li % len(_REF_PALETTE)]
+                    data = m["by_reference"][label][src]["cosine_per_layer"]
+                    datasets.append(
+                        {
+                            "label": label,
+                            "data": data,
+                            "borderColor": color,
+                            "backgroundColor": color + "22",
+                            "tension": 0.3,
+                            "pointRadius": 1,
+                        }
+                    )
+                chart_data = json.dumps({"labels": layer_labels, "datasets": datasets})
+                layer_row_html += (
+                    f"<div class='chart-wrap'><h4>{html_module.escape(src)}</h4>"
+                    f"<canvas id='chart_{cid}'></canvas></div>"
+                )
+                layer_row_js += f"""
+          new Chart(document.getElementById('chart_{cid}'), {{
+            type: 'line', data: {chart_data},
+            options: {{
+              animation: false, maintainAspectRatio: false,
+              plugins: {{ legend: {{ position: 'top' }} }},
+              scales: {{
+                x: {{ title: {{ display: true, text: 'Layer' }} }},
+                y: {{ title: {{ display: true, text: 'Cosine' }} }}
+              }}
+            }}
+          }});"""
+            layer_details_html += f"""
+            <details class="ref-layer-details">
+              <summary><span class="snap-role-badge" style="background:{role_color}">{html_module.escape(m["role"])}</span> {msg_label}</summary>
+              <div class="charts-row ref-charts-row">{layer_row_html}</div>
+            </details>"""
+            layer_details_js += layer_row_js
+
+        # ── summary table: reference × source → mean cosine / MAE / overlap (avg over messages) ──
+        def _ref_agg(label: str, src: str, metric: str) -> str:
+            vals = [m["by_reference"][label][src][metric] for m in ref_metrics]
+            return f"{float(np.mean(vals)):.4f}"
+
+        thead_sources = "".join(f"<th colspan='3'>{s}</th>" for s in RESIDUAL_SOURCES)
+        thead_metrics = "<th>Cos</th><th>MAE</th><th>Jac</th>" * len(RESIDUAL_SOURCES)
+        tbody_rows = ""
+        for label in all_labels:
+            cells = ""
+            for src in RESIDUAL_SOURCES:
+                cos_v = _ref_agg(label, src, "mean_cosine")
+                mae_v = _ref_agg(label, src, "mean_MAE")
+                ovl_v = _ref_agg(label, src, "mean_overlap")
+                bg = cosine_bg(float(cos_v))
+                cells += f'<td style="background:{bg}">{cos_v}</td><td>{mae_v}</td><td>{ovl_v}</td>'
+            tbody_rows += f"<tr><td><b>{html_module.escape(label)}</b></td>{cells}</tr>"
+
+        # ── message × reference heatmap (mean cosine averaged over sources) ──
+        hm_mat = []
+        for m in ref_metrics:
+            row = []
+            for label in all_labels:
+                avg_cos = float(
+                    np.mean(
+                        [m["by_reference"][label][src]["mean_cosine"] for src in RESIDUAL_SOURCES]
+                    )
+                )
+                row.append(round(avg_cos, 3))
+            hm_mat.append(row)
+
+        flat_hm = [v for row in hm_mat for v in row if v is not None]
+        hm_lo = min(flat_hm) if flat_hm else -1.0
+        hm_hi = max(flat_hm) if flat_hm else 1.0
+
+        heatmap_html = _heatmap_table(
+            hm_mat,
+            x_labels,
+            all_labels,
+            hm_lo,
+            hm_hi,
+            False,
+            ".3f",
+            "Message × Reference mean cosine (avg over sources)",
+        )
+
+        # ── per-role averages (user / assistant) ─────────────────────────────
+        role_blocks_html = ""
+        role_blocks_js = ""
+        for role in ("user", "assistant"):
+            role_snaps = [m for m in ref_metrics if m["role"] == role]
+            if not role_snaps:
+                continue
+
+            role_color = _ROLE_COLORS.get(role, "#64748b")
+
+            # average cosine_per_layer and scalar metrics across all snapshots of this role
+            avg_layer: dict[str, dict[str, list[float]]] = {}
+            avg_scalars: dict[str, dict[str, dict[str, float]]] = {}
+            for label in all_labels:
+                avg_layer[label] = {}
+                avg_scalars[label] = {}
+                for src in RESIDUAL_SOURCES:
+                    layer_cos = np.mean(
+                        [m["by_reference"][label][src]["cosine_per_layer"] for m in role_snaps],
+                        axis=0,
+                    )
+                    avg_layer[label][src] = [round(float(v), 4) for v in layer_cos]
+                    avg_scalars[label][src] = {
+                        "mean_cosine": float(
+                            np.mean(
+                                [m["by_reference"][label][src]["mean_cosine"] for m in role_snaps]
+                            )
+                        ),
+                        "mean_MAE": float(
+                            np.mean([m["by_reference"][label][src]["mean_MAE"] for m in role_snaps])
+                        ),
+                        "mean_overlap": float(
+                            np.mean(
+                                [m["by_reference"][label][src]["mean_overlap"] for m in role_snaps]
+                            )
+                        ),
+                    }
+
+            # summary table
+            trows = ""
+            for label in all_labels:
+                cells = ""
+                for src in RESIDUAL_SOURCES:
+                    s = avg_scalars[label][src]
+                    bg = cosine_bg(s["mean_cosine"])
+                    cells += (
+                        f'<td style="background:{bg}">{s["mean_cosine"]:.4f}</td>'
+                        f"<td>{s['mean_MAE']:.4f}</td>"
+                        f"<td>{s['mean_overlap']:.4f}</td>"
+                    )
+                trows += f"<tr><td><b>{html_module.escape(label)}</b></td>{cells}</tr>"
+
+            # 4 layer-cosine charts (avg across role's snapshots)
+            role_layer_html = ""
+            role_layer_js = ""
+            for si, src in enumerate(RESIDUAL_SOURCES):
+                cid = f"{pid}_{role[:3]}_lyr{si}"
+                datasets = []
+                for li, label in enumerate(all_labels):
+                    color = _REF_PALETTE[li % len(_REF_PALETTE)]
+                    datasets.append(
+                        {
+                            "label": label,
+                            "data": avg_layer[label][src],
+                            "borderColor": color,
+                            "backgroundColor": color + "22",
+                            "tension": 0.3,
+                            "pointRadius": 2,
+                        }
+                    )
+                chart_data = json.dumps({"labels": layer_labels, "datasets": datasets})
+                role_layer_html += (
+                    f"<div class='chart-wrap'><h4>{html_module.escape(src)}</h4>"
+                    f"<canvas id='chart_{cid}'></canvas></div>"
+                )
+                role_layer_js += f"""
+          new Chart(document.getElementById('chart_{cid}'), {{
+            type: 'line', data: {chart_data},
+            options: {{
+              animation: false, maintainAspectRatio: false,
+              plugins: {{ legend: {{ position: 'top' }} }},
+              scales: {{
+                x: {{ title: {{ display: true, text: 'Layer' }} }},
+                y: {{ title: {{ display: true, text: 'Avg cosine' }}, min: -1, max: 1 }}
+              }}
+            }}
+          }});"""
+
+            role_blocks_html += f"""
+          <div class="role-avg-block">
+            <h4 class="role-avg-title">
+              <span class="snap-role-badge" style="background:{role_color}">{html_module.escape(role)}</span>
+              Average vs references &mdash; {len(role_snaps)} {html_module.escape(role)} snapshot(s)
+            </h4>
+            <div class="overview-wrap">
+              <table class="summary-table ref-summary">
+                <thead>
+                  <tr><th rowspan="2">Reference</th>{thead_sources}</tr>
+                  <tr>{thead_metrics}</tr>
+                </thead>
+                <tbody>{trows}</tbody>
+              </table>
+            </div>
+            <div class="charts-row ref-charts-row">{role_layer_html}</div>
+          </div>"""
+            role_blocks_js += role_layer_js
+
+        html = f"""
+          <div class="state-block ref-block">
+            <h3 class="state-heading ref-heading">Reference State Comparison</h3>
+            <p class="ref-desc">
+              Mean cosine similarity between each conversation message prefix and each reference
+              states. Each point on the x-axis is a snapshot captured after the model
+              processed that many messages. Tracks how both user and assistant turns shift the
+              model's internal state toward or away from each reference.
+            </p>
+            <div class="charts-row ref-charts-row">{src_chart_html}</div>
+            <h4 class="ref-table-title">Message × reference mean cosine heatmap</h4>
+            {heatmap_html}
+            <h4 class="ref-table-title">Mean cosine / MAE / Jaccard per reference × source (averaged over {len(ref_metrics)} messages)</h4>
+            <div class="overview-wrap">
+              <table class="summary-table ref-summary">
+                <thead>
+                  <tr><th rowspan="2">Reference</th>{thead_sources}</tr>
+                  <tr>{thead_metrics}</tr>
+                </thead>
+                <tbody>{tbody_rows}</tbody>
+              </table>
+            </div>
+            <h4 class="ref-table-title">Layer-level cosine per message snapshot</h4>
+            {layer_details_html}
+            <h4 class="ref-table-title">Average by role</h4>
+            {role_blocks_html}
+          </div>"""
+
+        js = src_chart_js + layer_details_js + role_blocks_js
+        return html, js
+
+    # ── inter-run sections (only computed when multiple runs exist) ──────────
+    if not report_df.empty:
+        overview_rows_initial = _build_overview_rows(
+            report_df[report_df["state"] == "initial"], "pair"
+        )
+        overview_rows_final = _build_overview_rows(report_df[report_df["state"] == "final"], "pair")
+        agg_rows_initial = _build_agg_rows(report_df[report_df["state"] == "initial"])
+        agg_rows_final = _build_agg_rows(report_df[report_df["state"] == "final"])
+        rr_sections_initial = _build_rr_sections(report_df[report_df["state"] == "initial"])
+        rr_sections_final = _build_rr_sections(report_df[report_df["state"] == "final"])
+        layer_sections_initial = _build_layer_sections(
+            cosines_df[cosines_df["state"] == "initial"], pairs, pair_short_labels, "pair"
+        )
+        layer_sections_final = _build_layer_sections(
+            cosines_df[cosines_df["state"] == "final"], pairs, pair_short_labels, "pair"
+        )
+    else:
+        overview_rows_initial = overview_rows_final = ""
+        agg_rows_initial = agg_rows_final = ""
+        rr_sections_initial = rr_sections_final = ""
+        layer_sections_initial = layer_sections_final = ""
 
     # ── intra-run sections ────────────────────────────────────────────────────
     intra_runs = intra_report_df["run"].unique().tolist() if not intra_report_df.empty else []
     intra_run_short_labels = [r[:32] for r in intra_runs]
 
-    overview_rows_intra  = _build_overview_rows(intra_report_df, "run")
-    agg_rows_intra       = _build_agg_rows(intra_report_df)
+    overview_rows_intra = _build_overview_rows(intra_report_df, "run")
+    agg_rows_intra = _build_agg_rows(intra_report_df)
     layer_sections_intra = _build_layer_sections(
         intra_cosines_df, intra_runs, intra_run_short_labels, "run"
     )
@@ -456,29 +909,35 @@ def generate_html_report(
         for src in RESIDUAL_SOURCES:
             vals = pc_s[pc_s["source"] == src].sort_values("layer")[metric].tolist()
             c = SOURCE_COLORS.get(src, "#888")
-            out.append({
-                "label": src, "data": vals,
-                "borderColor": c, "backgroundColor": c + "22",
-                "tension": 0.3, "pointRadius": 3,
-            })
+            out.append(
+                {
+                    "label": src,
+                    "data": vals,
+                    "borderColor": c,
+                    "backgroundColor": c + "22",
+                    "tension": 0.3,
+                    "pointRadius": 3,
+                }
+            )
         return out
 
     def _summary_table_rows(pr_s: pd.DataFrame) -> str:
         def _fmt(r, col):
             v = r.get(col, float("nan"))
             return f"{float(v):.4f}" if v == v else "—"
+
         return "".join(
             f'<tr style="background:{cosine_bg(r["mean_cosine"])}">'
-            f'<td>{r["source"]}</td>'
-            f'<td>{r["mean_cosine"]:.4f}</td><td>{_fmt(r, "std_cosine")}</td>'
-            f'<td>{_fmt(r, "median_cosine")}</td><td>{r["min_cosine"]:.4f}</td>'
-            f'<td>{int(r["most_divergent_layer"])}</td>'
-            f'<td>{r["mean_MAE"]:.4f}</td><td>{_fmt(r, "std_MAE")}</td>'
-            f'<td>{_fmt(r, "median_MAE")}</td><td>{int(r["max_MAE_layer"])}</td>'
-            f'<td>{_fmt(r, "mean_overlap")}</td><td>{_fmt(r, "std_overlap")}</td>'
-            f'<td>{_fmt(r, "median_overlap")}</td>'
-            f'<td>{int(r["min_overlap_layer"]) if "min_overlap_layer" in r and r["min_overlap_layer"] == r["min_overlap_layer"] else "—"}</td>'
-            f'</tr>'
+            f"<td>{r['source']}</td>"
+            f"<td>{r['mean_cosine']:.4f}</td><td>{_fmt(r, 'std_cosine')}</td>"
+            f"<td>{_fmt(r, 'median_cosine')}</td><td>{r['min_cosine']:.4f}</td>"
+            f"<td>{int(r['most_divergent_layer'])}</td>"
+            f"<td>{r['mean_MAE']:.4f}</td><td>{_fmt(r, 'std_MAE')}</td>"
+            f"<td>{_fmt(r, 'median_MAE')}</td><td>{int(r['max_MAE_layer'])}</td>"
+            f"<td>{_fmt(r, 'mean_overlap')}</td><td>{_fmt(r, 'std_overlap')}</td>"
+            f"<td>{_fmt(r, 'median_overlap')}</td>"
+            f"<td>{int(r['min_overlap_layer']) if 'min_overlap_layer' in r and r['min_overlap_layer'] == r['min_overlap_layer'] else '—'}</td>"
+            f"</tr>"
             for _, r in pr_s.iterrows()
         )
 
@@ -508,19 +967,19 @@ def generate_html_report(
         js = f"""
           new Chart(document.getElementById('cos_{pid}'), {{
             type: 'line', data: {cos_json},
-            options: {{ plugins: {{ legend: {{ position: 'top' }} }},
+            options: {{ maintainAspectRatio: false, plugins: {{ legend: {{ position: 'top' }} }},
               scales: {{ x: {{ title: {{ display: true, text: 'Layer' }} }},
                          y: {{ title: {{ display: true, text: 'Cosine' }}, min: 0, max: 1 }} }} }}
           }});
           new Chart(document.getElementById('mae_{pid}'), {{
             type: 'line', data: {mae_json},
-            options: {{ plugins: {{ legend: {{ position: 'top' }} }},
+            options: {{ maintainAspectRatio: false, plugins: {{ legend: {{ position: 'top' }} }},
               scales: {{ x: {{ title: {{ display: true, text: 'Layer' }} }},
                          y: {{ title: {{ display: true, text: 'MAE' }}, min: 0 }} }} }}
           }});
           new Chart(document.getElementById('ovl_{pid}'), {{
             type: 'line', data: {ovl_json},
-            options: {{ plugins: {{ legend: {{ position: 'top' }} }},
+            options: {{ maintainAspectRatio: false, plugins: {{ legend: {{ position: 'top' }} }},
               scales: {{ x: {{ title: {{ display: true, text: 'Layer' }} }},
                          y: {{ title: {{ display: true, text: 'Jaccard overlap' }}, min: 0, max: 1 }} }} }}
           }});"""
@@ -532,10 +991,10 @@ def generate_html_report(
         pr_all = report_df[report_df["pair"] == pair]
         pc_all = cosines_df[cosines_df["pair"] == pair]
 
-        run_a    = pr_all["run_a"].iloc[0]
-        run_b    = pr_all["run_b"].iloc[0]
-        gen_a    = pr_all["generated_a"].iloc[0]
-        gen_b    = pr_all["generated_b"].iloc[0]
+        run_a = pr_all["run_a"].iloc[0]
+        run_b = pr_all["run_b"].iloc[0]
+        gen_a = pr_all["generated_a"].iloc[0]
+        gen_b = pr_all["generated_b"].iloc[0]
         prompt_a = pr_all["prompt_a"].iloc[0] if "prompt_a" in pr_all.columns else ""
         prompt_b = pr_all["prompt_b"].iloc[0] if "prompt_b" in pr_all.columns else ""
 
@@ -549,7 +1008,7 @@ def generate_html_report(
                 continue
 
             layers = sorted(pc_s["layer"].unique().tolist())
-            pid    = f"p{idx}_{state_label[0]}"
+            pid = f"p{idx}_{state_label[0]}"
             canvases, js = _chart_block(pid, layers, pc_s)
             chart_scripts += js
 
@@ -584,17 +1043,17 @@ def generate_html_report(
             continue
 
         generated = str(pr_s["generated"].iloc[0]) if "generated" in pr_s.columns else ""
-        prompt    = str(pr_s["prompt"].iloc[0]) if "prompt" in pr_s.columns else ""
-        layers    = sorted(pc_s["layer"].unique().tolist())
-        pid       = f"ir{idx}"
+        prompt = str(pr_s["prompt"].iloc[0]) if "prompt" in pr_s.columns else ""
+        layers = sorted(pc_s["layer"].unique().tolist())
+        pid = f"ir{idx}"
         canvases, js = _chart_block(pid, layers, pc_s)
 
         # ── top-k explorer ────────────────────────────────────────────────────
         topk_html = ""
-        topk_js   = ""
+        topk_js = ""
         topk_data = run_topk.get(run_name)
         if topk_data:
-            max_k    = max(len(s["top"]) for s in topk_data)
+            max_k = max(len(s["top"]) for s in topk_data)
             topk_json = json.dumps(topk_data)
             eid = f"topk_{idx}"
             topk_html = f"""
@@ -661,6 +1120,8 @@ def generate_html_report(
         else:
             topk_html = '<p class="topk-missing">Top-k predictions not captured for this run. Set <code>capture.top_k_probs &gt; 0</code> and re-run.</p>'
 
+        ref_html, ref_js = _build_ref_comparison_block(run_ref_metrics.get(run_name) or [], idx)
+
         intra_sections_html += f"""
         <section class="pair-card">
           <h2 class="pair-title">{run_name}</h2>
@@ -675,14 +1136,111 @@ def generate_html_report(
             <div class="charts-row">{canvases}</div>
             <table class="summary-table">{_SUMMARY_THEAD}<tbody>{_summary_table_rows(pr_s)}</tbody></table>
           </div>
+          {ref_html}
           <div class="state-block">
             <h3 class="state-heading">Generation step top-k explorer</h3>
             {topk_html}
           </div>
         </section>
-        <script>{js}{topk_js}</script>"""
+        <script>{js}{topk_js}{ref_js}</script>"""
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # ── inter-run section: only rendered when more than one run exists ────────
+    if not report_df.empty:
+        inter_run_html = f"""
+  <h2 class="section-heading">Inter-run comparison &mdash; overview (mean cosine per pair &times; source)</h2>
+  <h3 class="state-subheading">Initial state &mdash; prefill, last prompt token</h3>
+  <div class="overview-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Pair</th>
+          <th colspan="4">Mean cosine per source</th>
+          <th colspan="3">Across sources</th>
+        </tr>
+        <tr>{overview_header}</tr>
+      </thead>
+      <tbody>{overview_rows_initial}</tbody>
+    </table>
+  </div>
+  <h3 class="state-subheading">Final state &mdash; last generation step, last token</h3>
+  <div class="overview-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Pair</th>
+          <th colspan="4">Mean cosine per source</th>
+          <th colspan="3">Across sources</th>
+        </tr>
+        <tr>{overview_header}</tr>
+      </thead>
+      <tbody>{overview_rows_final}</tbody>
+    </table>
+  </div>
+
+  <h2 class="section-heading">Inter-run aggregate statistics across all pairs</h2>
+  <p class="meta">Mean &pm; std across pairs for each source.</p>
+  <h3 class="state-subheading">Initial state</h3>
+  <div class="overview-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Source</th>
+          <th colspan="3">Cosine similarity (across layers)</th>
+          <th colspan="3">MAE (across layers)</th>
+          <th colspan="3">Top-1% overlap (across layers)</th>
+        </tr>
+        <tr>
+          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
+          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
+          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
+        </tr>
+      </thead>
+      <tbody>{agg_rows_initial}</tbody>
+    </table>
+  </div>
+  <h3 class="state-subheading">Final state</h3>
+  <div class="overview-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Source</th>
+          <th colspan="3">Cosine similarity (across layers)</th>
+          <th colspan="3">MAE (across layers)</th>
+          <th colspan="3">Top-1% overlap (across layers)</th>
+        </tr>
+        <tr>
+          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
+          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
+          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
+        </tr>
+      </thead>
+      <tbody>{agg_rows_final}</tbody>
+    </table>
+  </div>
+
+  <h2 class="section-heading">Inter-run run &times; run similarity matrices</h2>
+  <p class="meta">Each cell shows the metric for that run pair. Diagonal is empty. Column labels refer to the run legend below.</p>
+  <table class="run-legend"><tbody>{run_legend_html}</tbody></table>
+  <h3 class="state-subheading">Initial state</h3>
+  {rr_sections_initial}
+  <h3 class="state-subheading">Final state</h3>
+  {rr_sections_final}
+
+  <h2 class="section-heading">Inter-run layer heatmaps &mdash; pairs &times; layers</h2>
+  <p class="meta">Rows = run pairs &middot; Columns = transformer layers &middot; Color: green = similar, red = divergent</p>
+  <h3 class="state-subheading">Initial state</h3>
+  {layer_sections_initial}
+  <h3 class="state-subheading">Final state</h3>
+  {layer_sections_final}
+
+  <h2 class="section-heading">Inter-run per-pair details</h2>
+  {pair_sections_html}"""
+    else:
+        inter_run_html = (
+            "<p class='meta'>Only one run present &mdash; inter-run comparison not available.</p>"
+        )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -721,7 +1279,8 @@ def generate_html_report(
     .state-block:last-child h3.state-heading {{ background: #0f766e; }}
     .charts-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; margin-bottom: 1.25rem; }}
     .chart-wrap h4 {{ font-size: 0.82rem; font-weight: 600; margin: 0 0 0.4rem; color: #475569; text-align: center; }}
-    canvas {{ max-height: 240px; }}
+    .chart-wrap {{  }}
+    canvas {{ max-height: 360px !important; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 0.82rem; }}
     th, td {{ padding: 0.35rem 0.6rem; border: 1px solid #e2e8f0; text-align: right; }}
     th {{ background: #f1f5f9; text-align: center; font-weight: 600; }}
@@ -812,6 +1371,18 @@ def generate_html_report(
     .topk-na {{ text-align: center; color: #cbd5e1; font-size: 0.75rem; }}
     .topk-missing {{ font-size: 0.82rem; color: #94a3b8; font-style: italic; margin: 0.5rem 0; }}
     .topk-missing code {{ background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 3px; font-style: normal; }}
+    /* ── reference comparison ───────────────────────────────────────────── */
+    .ref-block {{ background: #fafaf8; border-top: 2px solid #d97706; }}
+    h3.ref-heading {{ background: #d97706 !important; }}
+    .ref-desc {{ font-size: 0.8rem; color: #64748b; margin: 0 0 0.75rem; }}
+    .ref-charts-row {{ grid-template-columns: 1fr 1fr 1fr 1fr !important; }}
+    .ref-layer-details {{ margin: 1rem 0; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.5rem 0.75rem; }}
+    .ref-layer-details summary {{ cursor: pointer; font-size: 0.82rem; font-weight: 600; color: #475569; user-select: none; display: flex; align-items: center; gap: 0.4rem; }}
+    .snap-role-badge {{ font-size: 0.68rem; font-weight: 700; color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; white-space: nowrap; }}
+    .ref-table-title {{ font-size: 0.82rem; font-weight: 600; color: #475569; margin: 1rem 0 0.4rem; }}
+    .role-avg-block {{ margin-top: 1.25rem; padding-top: 1rem; border-top: 1px dashed #d97706; }}
+    .role-avg-title {{ font-size: 0.85rem; font-weight: 700; color: #334155; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.4rem; }}
+    table.ref-summary th, table.ref-summary td {{ font-size: 0.75rem; }}
   </style>
 </head>
 <body>
@@ -872,94 +1443,7 @@ def generate_html_report(
   {intra_sections_html}
 
   <!-- ═══════════════════════ INTER-RUN SECTION ═══════════════════════════ -->
-  <h2 class="section-heading">Inter-run comparison &mdash; overview (mean cosine per pair &times; source)</h2>
-  <h3 class="state-subheading">Initial state &mdash; prefill, last prompt token</h3>
-  <div class="overview-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th rowspan="2">Pair</th>
-          <th colspan="4">Mean cosine per source</th>
-          <th colspan="3">Across sources</th>
-        </tr>
-        <tr>{overview_header}</tr>
-      </thead>
-      <tbody>{overview_rows_initial}</tbody>
-    </table>
-  </div>
-  <h3 class="state-subheading">Final state &mdash; last generation step, last token</h3>
-  <div class="overview-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th rowspan="2">Pair</th>
-          <th colspan="4">Mean cosine per source</th>
-          <th colspan="3">Across sources</th>
-        </tr>
-        <tr>{overview_header}</tr>
-      </thead>
-      <tbody>{overview_rows_final}</tbody>
-    </table>
-  </div>
-
-  <h2 class="section-heading">Inter-run aggregate statistics across all pairs</h2>
-  <p class="meta">Mean &pm; std across pairs for each source.</p>
-  <h3 class="state-subheading">Initial state</h3>
-  <div class="overview-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th rowspan="2">Source</th>
-          <th colspan="3">Cosine similarity (across layers)</th>
-          <th colspan="3">MAE (across layers)</th>
-          <th colspan="3">Top-1% overlap (across layers)</th>
-        </tr>
-        <tr>
-          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
-          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
-          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
-        </tr>
-      </thead>
-      <tbody>{agg_rows_initial}</tbody>
-    </table>
-  </div>
-  <h3 class="state-subheading">Final state</h3>
-  <div class="overview-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th rowspan="2">Source</th>
-          <th colspan="3">Cosine similarity (across layers)</th>
-          <th colspan="3">MAE (across layers)</th>
-          <th colspan="3">Top-1% overlap (across layers)</th>
-        </tr>
-        <tr>
-          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
-          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
-          <th>Mean&nbsp;(mean&pm;std)</th><th>Std&nbsp;(mean&pm;std)</th><th>Median&nbsp;(mean&pm;std)</th>
-        </tr>
-      </thead>
-      <tbody>{agg_rows_final}</tbody>
-    </table>
-  </div>
-
-  <h2 class="section-heading">Inter-run run &times; run similarity matrices</h2>
-  <p class="meta">Each cell shows the metric for that run pair. Diagonal is empty. Column labels refer to the run legend below.</p>
-  <table class="run-legend"><tbody>{run_legend_html}</tbody></table>
-  <h3 class="state-subheading">Initial state</h3>
-  {rr_sections_initial}
-  <h3 class="state-subheading">Final state</h3>
-  {rr_sections_final}
-
-  <h2 class="section-heading">Inter-run layer heatmaps &mdash; pairs &times; layers</h2>
-  <p class="meta">Rows = run pairs &middot; Columns = transformer layers &middot; Color: green = similar, red = divergent</p>
-  <h3 class="state-subheading">Initial state</h3>
-  {layer_sections_initial}
-  <h3 class="state-subheading">Final state</h3>
-  {layer_sections_final}
-
-  <h2 class="section-heading">Inter-run per-pair details</h2>
-  {pair_sections_html}
+  {inter_run_html}
 
   <script>
     const RUN_DATA = {runs_js_data_json};
@@ -994,26 +1478,33 @@ def generate_html_report(
 </html>"""
 
     out_path.write_text(html, encoding="utf-8")
+    latest_path.write_text(html, encoding="utf-8")
 
 
 def main(runs_dir: Path) -> None:
     runs = discover_runs(runs_dir)
 
-    if len(runs) < 2:
-        print(f"Need at least 2 valid runs in {runs_dir}, found {len(runs)}.")
+    if len(runs) < 1:
+        print(f"No valid runs found in {runs_dir}.")
         return
 
-    pairs = list(combinations(runs, 2))
-    print(f"Found {len(runs)} runs → {len(pairs)} pair(s)\n")
+    print(f"Found {len(runs)} run(s)\n")
     print("=" * 80)
 
     all_summaries: list[dict] = []
     all_cosines: list[dict] = []
 
+    if len(runs) >= 2:
+        pairs = list(combinations(runs, 2))
+        print(f"Inter-run: {len(pairs)} pair(s)\n")
+    else:
+        pairs = []
+        print("Single run — skipping inter-run comparison.\n")
+
     for run_a, run_b in pairs:
         pair_key = f"{run_a.path.name}  vs  {run_b.path.name}"
-        gen_a    = run_label(run_a, short=True)
-        gen_b    = run_label(run_b, short=True)
+        gen_a = run_label(run_a, short=True)
+        gen_b = run_label(run_b, short=True)
         prompt_a = (run_a.summary().get("prompt", "") or "").strip()
         prompt_b = (run_b.summary().get("prompt", "") or "").strip()
 
@@ -1028,31 +1519,35 @@ def main(runs_dir: Path) -> None:
             print(summary_df.to_string())
 
             for src, row in summary_df.iterrows():
-                all_summaries.append({
-                    "state": state_label,
-                    "pair": pair_key,
-                    "run_a": run_a.path.name,
-                    "run_b": run_b.path.name,
-                    "generated_a": gen_a,
-                    "generated_b": gen_b,
-                    "prompt_a": prompt_a,
-                    "prompt_b": prompt_b,
-                    "source": src,
-                    **row.to_dict(),
-                })
+                all_summaries.append(
+                    {
+                        "state": state_label,
+                        "pair": pair_key,
+                        "run_a": run_a.path.name,
+                        "run_b": run_b.path.name,
+                        "generated_a": gen_a,
+                        "generated_b": gen_b,
+                        "prompt_a": prompt_a,
+                        "prompt_b": prompt_b,
+                        "source": src,
+                        **row.to_dict(),
+                    }
+                )
 
             for _, row in cosines_df.iterrows():
-                all_cosines.append({
-                    "state": state_label,
-                    "pair": pair_key,
-                    "run_a": run_a.path.name,
-                    "run_b": run_b.path.name,
-                    "generated_a": gen_a,
-                    "generated_b": gen_b,
-                    **row.to_dict(),
-                })
+                all_cosines.append(
+                    {
+                        "state": state_label,
+                        "pair": pair_key,
+                        "run_a": run_a.path.name,
+                        "run_b": run_b.path.name,
+                        "generated_a": gen_a,
+                        "generated_b": gen_b,
+                        **row.to_dict(),
+                    }
+                )
 
-    # ── intra-run: initial vs final + top-k explorer ──────────────────────────
+    # ── intra-run: initial vs final + top-k explorer + reference comparison ──────
     print(f"\n{'=' * 80}")
     print("  Intra-run: initial state vs final state")
     print(f"{'=' * 80}")
@@ -1060,11 +1555,12 @@ def main(runs_dir: Path) -> None:
     intra_summaries: list[dict] = []
     intra_cosines: list[dict] = []
     run_topk: dict[str, list[dict] | None] = {}
+    run_ref_metrics: dict[str, list[dict] | None] = {}
 
     for run in runs:
-        run_name  = run.path.name
+        run_name = run.path.name
         generated = (run.summary().get("generated", "") or "").replace("\n", " ").strip()
-        prompt    = (run.summary().get("prompt", "") or "").strip()
+        prompt = (run.summary().get("prompt", "") or "").strip()
 
         print(f"\n  {run_label(run)}")
         summary_df, cosines_df = compare_run_states(run)
@@ -1077,32 +1573,50 @@ def main(runs_dir: Path) -> None:
         else:
             print("    top-k: not captured (capture.top_k_probs=0)")
 
+        ref_states = load_reference_states(run)
+        snapshots = load_conversation_snapshots(run) if ref_states else None
+        if ref_states and snapshots:
+            print(
+                f"    references: {list(ref_states.keys())}  ×  {len(snapshots)} conversation snapshot(s)"
+            )
+            run_ref_metrics[run_name] = compute_snapshot_reference_metrics(snapshots, ref_states)
+        else:
+            if ref_states and not snapshots:
+                print("    references found but no conversation snapshots — re-run to capture")
+            run_ref_metrics[run_name] = None
+
         for src, row in summary_df.iterrows():
-            intra_summaries.append({
-                "run": run_name,
-                "generated": generated,
-                "prompt": prompt,
-                "source": src,
-                **row.to_dict(),
-            })
+            intra_summaries.append(
+                {
+                    "run": run_name,
+                    "generated": generated,
+                    "prompt": prompt,
+                    "source": src,
+                    **row.to_dict(),
+                }
+            )
 
         for _, row in cosines_df.iterrows():
-            intra_cosines.append({
-                "run": run_name,
-                **row.to_dict(),
-            })
+            intra_cosines.append(
+                {
+                    "run": run_name,
+                    **row.to_dict(),
+                }
+            )
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    out_dir = runs_dir.parent
-    summary_path       = out_dir / "comparison_report.csv"
-    cosines_path       = out_dir / "comparison_cosines.csv"
-    intra_report_path  = out_dir / "intra_run_report.csv"
+    out_dir = runs_dir.parent / "results"
+    out_dir.mkdir(exist_ok=True)
+    summary_path = out_dir / "comparison_report.csv"
+    cosines_path = out_dir / "comparison_cosines.csv"
+    intra_report_path = out_dir / "intra_run_report.csv"
     intra_cosines_path = out_dir / "intra_run_cosines.csv"
-    html_path          = out_dir / f"comparison_report_{ts}.html"
+    html_path = out_dir / f"comparison_report_{ts}.html"
+    lastest_path = out_dir / "latest_output.html"
 
-    report_df        = pd.DataFrame(all_summaries)
-    cosines_df       = pd.DataFrame(all_cosines)
-    intra_report_df  = pd.DataFrame(intra_summaries)
+    report_df = pd.DataFrame(all_summaries)
+    cosines_df = pd.DataFrame(all_cosines)
+    intra_report_df = pd.DataFrame(intra_summaries)
     intra_cosines_df = pd.DataFrame(intra_cosines)
 
     report_df.to_csv(summary_path, index=False)
@@ -1110,7 +1624,16 @@ def main(runs_dir: Path) -> None:
     intra_report_df.to_csv(intra_report_path, index=False)
     intra_cosines_df.to_csv(intra_cosines_path, index=False)
 
-    generate_html_report(report_df, cosines_df, intra_report_df, intra_cosines_df, run_topk, html_path)
+    generate_html_report(
+        report_df,
+        cosines_df,
+        intra_report_df,
+        intra_cosines_df,
+        run_topk,
+        run_ref_metrics,
+        html_path,
+        lastest_path,
+    )
 
     print(f"\nInter-run summary → {summary_path}")
     print(f"Inter-run layers  → {cosines_path}")

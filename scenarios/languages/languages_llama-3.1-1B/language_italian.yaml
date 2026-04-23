@@ -11,7 +11,7 @@ prompt:
     - role: user
       content: "Di che colore è il cielo?"    
 generation:
-  max_new_tokens: 1
+  max_new_tokens: 10
   do_sample: false
   seed: 42
   temperature: 0

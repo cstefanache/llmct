@@ -113,3 +113,49 @@ def write_step(paths: RunPaths, record: StepRecord) -> dict[str, Any]:
 
 def write_steps_json(paths: RunPaths, entries: list[dict[str, Any]]) -> None:
     paths.steps_json.write_text(json.dumps({"steps": entries}, indent=2, default=str))
+
+
+def write_reference_state(run_dir: Path, label: str, state: dict[str, np.ndarray]) -> None:
+    """Save reference state to {run_dir}/references/ref_{label}.npz.
+
+    Each entry in state is (num_layers, hidden_size); stored per-layer as layer_NN/source.
+    """
+    ref_dir = run_dir / "references"
+    ref_dir.mkdir(exist_ok=True)
+    npz_data: dict[str, np.ndarray] = {}
+    for src, arr in state.items():
+        for layer_idx in range(arr.shape[0]):
+            npz_data[f"layer_{layer_idx:02d}/{src}"] = arr[layer_idx]
+    np.savez_compressed(ref_dir / f"ref_{label}.npz", **npz_data)
+
+
+def write_reference_index(run_dir: Path, labels: list[str]) -> None:
+    """Write references/index.json listing captured reference labels."""
+    (run_dir / "references" / "index.json").write_text(
+        json.dumps({"labels": labels}), encoding="utf-8"
+    )
+
+
+def write_conversation_snapshot(
+    run_dir: Path, idx: int, role: str, state: dict[str, np.ndarray]
+) -> None:
+    """Save one conversation prefix snapshot to {run_dir}/conversation_snapshots/snapshot_NN_role.npz.
+
+    Each entry in state is (num_layers, hidden_size); stored per-layer as layer_NN/source.
+    """
+    snap_dir = run_dir / "conversation_snapshots"
+    snap_dir.mkdir(exist_ok=True)
+    npz_data: dict[str, np.ndarray] = {}
+    for src, arr in state.items():
+        for layer_idx in range(arr.shape[0]):
+            npz_data[f"layer_{layer_idx:02d}/{src}"] = arr[layer_idx]
+    np.savez_compressed(snap_dir / f"snapshot_{idx:02d}_{role}.npz", **npz_data)
+
+
+def write_conversation_snapshot_index(
+    run_dir: Path, snapshots: list[dict[str, Any]]
+) -> None:
+    """Write conversation_snapshots/index.json with metadata for each captured snapshot."""
+    (run_dir / "conversation_snapshots" / "index.json").write_text(
+        json.dumps({"snapshots": snapshots}), encoding="utf-8"
+    )
