@@ -214,4 +214,20 @@ def capture_reference_prefill(
                 vec = np.zeros(arch.hidden_size, dtype=np.float32)
             layers_arr.append(vec)
         result[src] = np.stack(layers_arr)  # (num_layers, hidden_size)
+
+    for qk in ("q", "k", "v"):
+        vecs: list[np.ndarray | None] = []
+        for layer in range(arch.num_layers):
+            key = f"layer_{layer:02d}/{qk}"
+            if key in tensors:
+                arr = np.asarray(tensors[key], dtype=np.float32)
+                vecs.append(arr[0, -1, :] if arr.ndim == 3 else arr[0])
+            else:
+                vecs.append(None)
+        if any(v is not None for v in vecs):
+            dim = next(v for v in vecs if v is not None).shape[0]
+            result[qk] = np.stack(
+                [v if v is not None else np.zeros(dim, dtype=np.float32) for v in vecs]
+            )
+
     return result

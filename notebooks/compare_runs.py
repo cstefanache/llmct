@@ -146,6 +146,73 @@ def compare_run_states(run: Run) -> tuple[pd.DataFrame, pd.DataFrame]:
     return _compute_metrics(initial_state(run), final_state(run), run.num_layers)
 
 
+def load_qkv_attention_data(run: Run) -> dict | None:
+    """Compute Q·K softmax ×V attention for the prefill step, last query position.
+
+    Handles GQA by splitting q into ratio groups of size Dk each and averaging scores.
+
+    Returns dict:
+      seq_len, num_layers,
+      attn_weights:   list[list[float]] — (num_layers, T) softmax attention weights
+      context_norms:  list[float]       — (num_layers,) ‖attended V‖
+      attn_entropy:   list[float]       — (num_layers,) Shannon entropy of attn distribution
+      q_k_dot:        list[list[float]] — (num_layers, T) raw q·k/√dk scores before softmax
+    or None if q/k/v not captured.
+    """
+    try:
+        with run.load_npz(0) as npz:
+            if "layer_00/q" not in npz:
+                return None
+            num_layers = run.num_layers
+            attn_weights_all: list = []
+            context_norms: list[float] = []
+            attn_entropy: list[float] = []
+            q_k_dot_all: list = []
+            seq_len: int | None = None
+            for layer in range(num_layers):
+                tag = f"layer_{layer:02d}"
+                if f"{tag}/q" not in npz or f"{tag}/k" not in npz or f"{tag}/v" not in npz:
+                    attn_weights_all.append(None)
+                    context_norms.append(0.0)
+                    attn_entropy.append(0.0)
+                    q_k_dot_all.append(None)
+                    continue
+                q = np.asarray(npz[f"{tag}/q"], dtype=np.float32)  # (1, T, Dq)
+                k = np.asarray(npz[f"{tag}/k"], dtype=np.float32)  # (1, T, Dk)
+                v = np.asarray(npz[f"{tag}/v"], dtype=np.float32)  # (1, T, Dk)
+                T = q.shape[1]
+                if seq_len is None:
+                    seq_len = T
+                Dq, Dk = q.shape[-1], k.shape[-1]
+                q_last = q[0, -1, :]  # (Dq,)
+                k_all  = k[0]          # (T, Dk)
+                v_all  = v[0]          # (T, Dk)
+                if Dq % Dk == 0:
+                    ratio = Dq // Dk
+                    raw_scores = (q_last.reshape(ratio, Dk) @ k_all.T).mean(0) / (Dk ** 0.5)
+                else:
+                    raw_scores = (q_last[:Dk] @ k_all.T) / (Dk ** 0.5)
+                # softmax on a shifted copy (numerical stability); keep raw for q_k_dot
+                shifted = raw_scores - raw_scores.max()
+                exp_s = np.exp(shifted)
+                attn = exp_s / (exp_s.sum() + 1e-9)
+                context = attn @ v_all
+                attn_weights_all.append([round(float(w), 6) for w in attn])
+                context_norms.append(round(float(np.linalg.norm(context)), 4))
+                attn_entropy.append(round(float(-np.sum(attn * np.log(attn + 1e-9))), 4))
+                q_k_dot_all.append([round(float(s), 4) for s in raw_scores])
+            return {
+                "seq_len": seq_len or 0,
+                "num_layers": num_layers,
+                "attn_weights": attn_weights_all,
+                "context_norms": context_norms,
+                "attn_entropy": attn_entropy,
+                "q_k_dot": q_k_dot_all,
+            }
+    except Exception:
+        return None
+
+
 def get_step_topk(run: Run) -> list[dict] | None:
     """Read pre-captured top-k next-token predictions from steps.json.
 
@@ -273,6 +340,199 @@ def compute_snapshot_reference_metrics(
     return results
 
 
+def load_reference_qkv(run: Run) -> dict[str, np.ndarray] | None:
+    """Load per-layer last-token Q,K,V from each reference, concat to (num_layers, Dq+Dk+Dk).
+
+    Returns {label: np.ndarray (num_layers, Dq+Dk+Dk)} or None if qkv not captured.
+    """
+    ref_dir = run.path / "references"
+    index_path = ref_dir / "index.json"
+    if not index_path.exists():
+        return None
+    labels: list[str] = json.loads(index_path.read_text())["labels"]
+    result: dict[str, np.ndarray] = {}
+    for label in labels:
+        npz_path = ref_dir / f"ref_{label}.npz"
+        if not npz_path.exists():
+            continue
+        with np.load(npz_path) as npz:
+            if "layer_00/q" not in npz:
+                return None
+            rows = []
+            for layer in range(run.num_layers):
+                q = np.asarray(npz[f"layer_{layer:02d}/q"], dtype=np.float32).reshape(-1)
+                k = np.asarray(npz[f"layer_{layer:02d}/k"], dtype=np.float32).reshape(-1)
+                v = np.asarray(npz[f"layer_{layer:02d}/v"], dtype=np.float32).reshape(-1)
+                rows.append(np.concatenate([q, k, v]))
+            result[label] = np.stack(rows)
+    return result or None
+
+
+def load_snapshot_qkv(run: Run) -> list[dict] | None:
+    """Load per-layer last-token Q,K,V from each conversation snapshot, concat per layer.
+
+    Returns list of {index, role, qkv: (num_layers, Dq+Dk+Dk)} or None.
+    """
+    snap_dir = run.path / "conversation_snapshots"
+    index_path = snap_dir / "index.json"
+    if not index_path.exists():
+        return None
+    snap_info: list[dict] = json.loads(index_path.read_text())["snapshots"]
+    result = []
+    for info in snap_info:
+        idx = info["index"]
+        role = info["role"]
+        npz_path = snap_dir / f"snapshot_{idx:02d}_{role}.npz"
+        if not npz_path.exists():
+            continue
+        with np.load(npz_path) as npz:
+            if "layer_00/q" not in npz:
+                return None
+            rows = []
+            for layer in range(run.num_layers):
+                q = np.asarray(npz[f"layer_{layer:02d}/q"], dtype=np.float32).reshape(-1)
+                k = np.asarray(npz[f"layer_{layer:02d}/k"], dtype=np.float32).reshape(-1)
+                v = np.asarray(npz[f"layer_{layer:02d}/v"], dtype=np.float32).reshape(-1)
+                rows.append(np.concatenate([q, k, v]))
+        result.append({"index": idx, "role": role, "qkv": np.stack(rows)})
+    return result or None
+
+
+def _three_qkv_metrics(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
+    """Given two same-shape vectors, return (average, NAS, sign-filtered average) scalars.
+
+    - Average:                mean of the element-wise midpoint (a + b) / 2
+    - Normalized Agreement:   cosine(a, b) * fraction-of-dims-with-matching-sign
+    - Sign-Filtered Average:  mean of (a + b) / 2 over dims where sign(a) == sign(b)
+    """
+    eps = 1e-8
+    avg = float(((a + b) / 2).mean())
+    cos = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + eps))
+    sign_mask = np.sign(a) == np.sign(b)
+    nas = float(sign_mask.mean() * cos)
+    sfa = float(np.where(sign_mask, (a + b) / 2, 0.0).sum() / (sign_mask.sum() + eps))
+    return avg, nas, sfa
+
+
+def compute_snapshot_reference_qkv_metrics(
+    snap_qkv: list[dict],
+    ref_qkv: dict[str, np.ndarray],
+    num_layers: int,
+) -> list[dict]:
+    """Per-(msg, ref, layer) scalar metrics between msg's QKV and ref's QKV.
+
+    Returns list of {index, role, by_reference: {label: {avg, nas, sfa: list[float] over layers}}}.
+    """
+    results = []
+    for snap in snap_qkv:
+        msg = snap["qkv"]
+        by_ref: dict[str, dict] = {}
+        for label, ref_arr in ref_qkv.items():
+            avgs, nas_vals, sfas = [], [], []
+            for layer in range(num_layers):
+                a = msg[layer]
+                b = ref_arr[layer]
+                avg, nas, sfa = _three_qkv_metrics(a, b)
+                avgs.append(round(avg, 4))
+                nas_vals.append(round(nas, 4))
+                sfas.append(round(sfa, 4))
+            by_ref[label] = {"avg": avgs, "nas": nas_vals, "sfa": sfas}
+        results.append(
+            {"index": snap["index"], "role": snap["role"], "by_reference": by_ref}
+        )
+    return results
+
+
+def compute_snapshot_reference_qkdot_metrics(run: Run) -> list[dict] | None:
+    """Per-(msg, ref, layer) avg/NAS/SFA on q_k_dot vectors computed against the run's K matrices.
+
+    For each snapshot and each reference, projects the stored last-token Q vector through the
+    run's full key matrix (step 0) to get a q·k/√dk score vector of length T, then compares
+    snapshot vs reference per layer using _three_qkv_metrics.
+
+    Returns list of {index, role, by_reference: {label: {avg, nas, sfa: list[float]}}} or None.
+    """
+    ref_dir = run.path / "references"
+    snap_dir = run.path / "conversation_snapshots"
+    if not (ref_dir / "index.json").exists() or not (snap_dir / "index.json").exists():
+        return None
+
+    labels: list[str] = json.loads((ref_dir / "index.json").read_text())["labels"]
+    snap_info: list[dict] = json.loads((snap_dir / "index.json").read_text())["snapshots"]
+    num_layers = run.num_layers
+
+    def _load_q(npz_path: Path) -> np.ndarray | None:
+        if not npz_path.exists():
+            return None
+        with np.load(npz_path) as npz:
+            if "layer_00/q" not in npz:
+                return None
+            return np.stack(
+                [np.asarray(npz[f"layer_{l:02d}/q"], dtype=np.float32).reshape(-1)
+                 for l in range(num_layers)]
+            )  # (num_layers, Dq)
+
+    ref_q: dict[str, np.ndarray] = {}
+    for label in labels:
+        q = _load_q(ref_dir / f"ref_{label}.npz")
+        if q is not None:
+            ref_q[label] = q
+    if not ref_q:
+        return None
+
+    snap_q: list[dict] = []
+    for info in snap_info:
+        idx, role = info["index"], info["role"]
+        q = _load_q(snap_dir / f"snapshot_{idx:02d}_{role}.npz")
+        if q is not None:
+            snap_q.append({"index": idx, "role": role, "q": q})
+    if not snap_q:
+        return None
+
+    # One load of step 0 computes q_k_dot for every Q vector at once
+    all_q = {f"r:{lbl}": arr for lbl, arr in ref_q.items()}
+    for s in snap_q:
+        all_q[f"s:{s['index']}:{s['role']}"] = s["q"]
+
+    q_k_dots: dict[str, list[list[float]]] = {k: [] for k in all_q}
+    try:
+        with run.load_npz(0) as npz:
+            if "layer_00/k" not in npz:
+                return None
+            for layer in range(num_layers):
+                tag = f"layer_{layer:02d}"
+                k = np.asarray(npz[f"{tag}/k"], dtype=np.float32)  # (1, T, Dk)
+                Dk = k.shape[-1]
+                k_all = k[0]  # (T, Dk)
+                for key, q_arr in all_q.items():
+                    q_last = q_arr[layer]  # (Dq,)
+                    Dq = q_last.shape[0]
+                    if Dq % Dk == 0:
+                        scores = (q_last.reshape(Dq // Dk, Dk) @ k_all.T).mean(0) / (Dk ** 0.5)
+                    else:
+                        scores = (q_last[:Dk] @ k_all.T) / (Dk ** 0.5)
+                    q_k_dots[key].append([round(float(v), 4) for v in scores])
+    except Exception:
+        return None
+
+    results = []
+    for snap in snap_q:
+        snap_key = f"s:{snap['index']}:{snap['role']}"
+        snap_dots = [np.array(q_k_dots[snap_key][l]) for l in range(num_layers)]
+        by_ref: dict[str, dict] = {}
+        for label in ref_q:
+            ref_dots = [np.array(q_k_dots[f"r:{label}"][l]) for l in range(num_layers)]
+            avgs, nas_vals, sfas = [], [], []
+            for layer in range(num_layers):
+                avg, nas, sfa = _three_qkv_metrics(snap_dots[layer], ref_dots[layer])
+                avgs.append(round(avg, 4))
+                nas_vals.append(round(nas, 4))
+                sfas.append(round(sfa, 4))
+            by_ref[label] = {"avg": avgs, "nas": nas_vals, "sfa": sfas}
+        results.append({"index": snap["index"], "role": snap["role"], "by_reference": by_ref})
+    return results
+
+
 def run_label(run: Run, short: bool = False) -> str:
     info = run.summary()
     generated = (info.get("generated", "") or "").replace("\n", " ").strip()
@@ -298,6 +558,9 @@ def generate_html_report(
     intra_cosines_df: pd.DataFrame,
     run_topk: dict[str, list[dict] | None],
     run_ref_metrics: dict[str, list[dict] | None],
+    run_ref_qkv_metrics: dict[str, list[dict] | None],
+    run_ref_qkdot_metrics: dict[str, list[dict] | None],
+    run_qkv_attn: dict[str, dict | None],
     out_path: Path,
     latest_path: Path,
 ) -> None:
@@ -568,14 +831,28 @@ def generate_html_report(
 
     _ROLE_COLORS = {"system": "#94a3b8", "user": "#2563eb", "assistant": "#16a34a"}
 
-    def _build_ref_comparison_block(ref_metrics: list[dict], card_idx: int) -> tuple[str, str]:
+    def _build_ref_comparison_block(
+        ref_metrics: list[dict],
+        ref_qkv_metrics: list[dict],
+        ref_qkdot_metrics: list[dict],
+        card_idx: int,
+    ) -> tuple[str, str]:
         """Return (html, js) for the reference state comparison section of an intra-run card.
 
-        ref_metrics is a list of conversation snapshot entries, each with:
-          {index, role, content_preview, by_reference: {label: {source: {...}}}}
+        ref_metrics: per-snapshot residual-stream cosine/MAE/Jaccard vs each reference.
+        ref_qkv_metrics: per-snapshot avg / NAS / SFA vs each reference, computed on the
+            concatenated last-token Q·K·V vectors per layer.
+        ref_qkdot_metrics: per-snapshot avg / NAS / SFA on q_k_dot vectors (each Q projected
+            through the run's full K matrix), one canvas per metric per message.
         """
         if not ref_metrics:
             return "", ""
+        qkv_by_idx: dict[int, dict] = {
+            m["index"]: m for m in (ref_qkv_metrics or [])
+        }
+        qkdot_by_idx: dict[int, dict] = {
+            m["index"]: m for m in (ref_qkdot_metrics or [])
+        }
 
         all_labels = list(ref_metrics[0]["by_reference"].keys())
         msg_indices = [m["index"] for m in ref_metrics]
@@ -680,12 +957,101 @@ def generate_html_report(
               }}
             }}
           }});"""
+            # ── 3 heatmaps: Average, NAS, SFA between msg's QKV and each ref's QKV ──
+            qkv_hm_html = ""
+            qkv_entry = qkv_by_idx.get(m["index"])
+            if qkv_entry:
+                by_ref_qkv = qkv_entry["by_reference"]
+                for metric_key, metric_title in (
+                    ("avg", "Average — mean((a+b)/2)"),
+                    ("nas", "Normalized Agreement Score — cos(a,b) × sign-agree rate"),
+                    ("sfa", "Sign-Filtered Average — mean((a+b)/2) on sign-agreeing dims"),
+                ):
+                    matrix = [by_ref_qkv[lbl][metric_key] for lbl in all_labels]
+                    flat = [v for row in matrix for v in row if v is not None]
+                    if flat:
+                        lo, hi = min(flat), max(flat)
+                    else:
+                        lo, hi = 0.0, 1.0
+                    reverse = False
+                    if metric_key == "nas":
+                        # NAS ∈ roughly [-1, 1]; keep a fixed symmetric-ish range for readability
+                        lo = min(lo, -1.0) if lo < 0 else 0.0
+                        hi = max(hi, 1.0)
+                    qkv_hm_html += (
+                        f"<div class='hm-item hm-full'>"
+                        f"{_heatmap_table(matrix, all_labels, [str(li) for li in layer_labels], lo, hi, reverse, '.3f', metric_title)}"
+                        f"</div>"
+                    )
+
+            # ── 3 pixel canvases: avg / NAS / SFA on q_k_dot (snapshot vs each ref) ──
+            qkdot_canvas_html = ""
+            qkdot_canvas_js = ""
+            qkdot_entry = qkdot_by_idx.get(m["index"])
+            if qkdot_entry:
+                by_ref_qkdot = qkdot_entry["by_reference"]
+                ref_labels_js = json.dumps(all_labels)
+                for metric_key, metric_title, color_fn, symmetric in (
+                    ("avg",  "q·k Average — mean((a+b)/2)",                          "heatColor", False),
+                    ("nas",  "q·k Normalized Agreement Score — cos × sign-agree",    "divColor",  True),
+                    ("sfa",  "q·k Sign-Filtered Average",                            "divColor",  True),
+                ):
+                    # matrix[ref_idx][layer_idx] = scalar
+                    matrix_data = [by_ref_qkdot[lbl][metric_key] for lbl in all_labels]
+                    canvas_id = f"qkdot_{metric_key}_{pid}_m{mi}"
+                    sym_js = "true" if symmetric else "false"
+                    qkdot_canvas_html += (
+                        f"<div class='qkdot-canvas-wrap'>"
+                        f"<h5 class='qkdot-canvas-title'>{html_module.escape(metric_title)}</h5>"
+                        f"<div class='qkv-hm-scroll'><canvas id='{canvas_id}'></canvas></div>"
+                        f"</div>"
+                    )
+                    qkdot_canvas_js += f"""
+          (function() {{
+            const matrix = {json.dumps(matrix_data)};
+            const refLabels = {ref_labels_js};
+            const nR = matrix.length, nL = matrix[0].length;
+            const cW = Math.max(4, Math.min(16, Math.floor(640 / nL)));
+            const cH = Math.max(14, Math.min(28, Math.floor(200 / nR)));
+            const canvas = document.getElementById('{canvas_id}');
+            if (!canvas) return;
+            canvas.width = nL * cW; canvas.height = nR * cH;
+            const ctx = canvas.getContext('2d');
+            function heatColor(t) {{
+              const r=Math.round(Math.min(255,255*Math.max(0,2*t-0.5)));
+              const g=Math.round(Math.min(255,255*Math.max(0,2*t)));
+              const b=Math.round(255*Math.max(0,1-3*t));
+              return `rgb(${{r}},${{g}},${{b}})`;
+            }}
+            function divColor(t) {{
+              if (t < 0.5) {{ const s=1-t*2; return `rgb(${{Math.round(255*(1-s))}},${{Math.round(255*(1-s))}},255)`; }}
+              else {{ const s=(t-0.5)*2; return `rgb(255,${{Math.round(255*(1-s))}},${{Math.round(255*(1-s))}})`; }}
+            }}
+            const colorFn = {color_fn};
+            let lo=Infinity, hi=-Infinity;
+            matrix.forEach(row=>row.forEach(v=>{{if(v<lo)lo=v;if(v>hi)hi=v;}}));
+            if ({sym_js}) {{ const a=Math.max(Math.abs(lo),Math.abs(hi)); lo=-a; hi=a; }}
+            const range = hi-lo || 1;
+            matrix.forEach((row, ri) => {{
+              row.forEach((v, li) => {{
+                const t = Math.min(1, Math.max(0, (v-lo)/range));
+                ctx.fillStyle = colorFn(t);
+                ctx.fillRect(li*cW, ri*cH, cW, cH);
+              }});
+              ctx.fillStyle = 'rgba(255,255,255,0.88)';
+              ctx.font = `${{Math.max(8,cH-4)}}px monospace`;
+              ctx.fillText(refLabels[ri].substring(0,7), 2, ri*cH+cH-3);
+            }});
+          }})();"""
+
             layer_details_html += f"""
             <details class="ref-layer-details">
               <summary><span class="snap-role-badge" style="background:{role_color}">{html_module.escape(m["role"])}</span> {msg_label}</summary>
               <div class="charts-row ref-charts-row">{layer_row_html}</div>
+              {"<div class='hm-grid hm-grid-2 ref-qkv-hm'>" + qkv_hm_html + "</div>" if qkv_hm_html else ""}
+              {"<div class='qkdot-canvases-row'>" + qkdot_canvas_html + "</div>" if qkdot_canvas_html else ""}
             </details>"""
-            layer_details_js += layer_row_js
+            layer_details_js += layer_row_js + qkdot_canvas_js
 
         # ── summary table: reference × source → mean cosine / MAE / overlap (avg over messages) ──
         def _ref_agg(label: str, src: str, metric: str) -> str:
@@ -869,6 +1235,237 @@ def generate_html_report(
           </div>"""
 
         js = src_chart_js + layer_details_js + role_blocks_js
+        return html, js
+
+    def _build_qkv_attn_block(qkv_data: dict, card_idx: int) -> tuple[str, str]:
+        """Return (html, js) for the Q·K→softmax→×V attention canvas section."""
+        if not qkv_data:
+            return (
+                '<div class="state-block"><h3 class="state-heading qkv-heading">'
+                'Q·K·V attention canvas</h3>'
+                '<p class="topk-missing">q/k/v not captured. Enable <code>capture.qkv = true</code> and re-run.</p></div>',
+                "",
+            )
+
+        num_layers = qkv_data["num_layers"]
+        seq_len = qkv_data["seq_len"]
+        layers_list = list(range(num_layers))
+        context_norms = qkv_data["context_norms"]
+        attn_entropy = qkv_data["attn_entropy"]
+
+        qkv_json = json.dumps(qkv_data)
+        hm_id      = f"qkv_hm_{card_idx}"
+        hm_avg_id  = f"qkv_hm_avg_{card_idx}"
+        dot_id     = f"qkv_dot_{card_idx}"
+        dot_avg_id = f"qkv_dot_avg_{card_idx}"
+        norm_id    = f"qkv_norm_{card_idx}"
+        ent_id     = f"qkv_ent_{card_idx}"
+
+        norm_data = json.dumps({
+            "labels": layers_list,
+            "datasets": [{
+                "label": "‖Attended V‖",
+                "data": context_norms,
+                "backgroundColor": "#3b82f688",
+                "borderColor": "#3b82f6",
+                "borderWidth": 1,
+            }],
+        })
+        ent_data = json.dumps({
+            "labels": layers_list,
+            "datasets": [{
+                "label": "Attention entropy",
+                "data": attn_entropy,
+                "backgroundColor": "#f59e0b88",
+                "borderColor": "#f59e0b",
+                "borderWidth": 1,
+            }],
+        })
+
+        html = f"""
+          <div class="state-block qkv-block">
+            <h3 class="state-heading qkv-heading">Q·K&#x2192;softmax&#x2192;&times;V attention canvas &mdash; prefill, last token</h3>
+            <p class="ref-desc">
+              Heatmap rows&nbsp;=&nbsp;layers &middot; columns&nbsp;=&nbsp;sequence positions.
+              Top: softmax attention weights. Bottom: raw q&middot;k/&radic;d<sub>k</sub> scores (diverging blue&#x2192;white&#x2192;red).
+              The 5&nbsp;px strip below each heatmap is the per-position average collapsed across all layers.
+            </p>
+            <div class="qkv-layout">
+              <div class="qkv-hm-col">
+                <h4 class="qkv-chart-title">Attention weights &mdash; softmax ({num_layers} layers &times; {seq_len} pos)</h4>
+                <div class="qkv-hm-scroll">
+                  <canvas id="{hm_id}"></canvas>
+                  <!-- <canvas id="{hm_avg_id}" class="qkv-avg-band"></canvas> -->
+                </div>
+                <div class="qkv-hm-legend">
+                  <span class="qkv-leg-lo">0</span>
+                  <canvas id="{hm_id}_leg" width="120" height="12"></canvas>
+                  <span class="qkv-leg-hi">max &nbsp;&nbsp; &#x2193; avg across layers</span>
+                </div>
+                <h4 class="qkv-chart-title" style="margin-top:1rem">Raw q&middot;k/&radic;d<sub>k</sub> scores ({num_layers} layers &times; {seq_len} pos)</h4>
+                <div class="qkv-hm-scroll">
+                  <canvas id="{dot_id}"></canvas>
+                  <!-- <canvas id="{dot_avg_id}" class="qkv-avg-band"></canvas> -->
+                </div>
+                <div class="qkv-hm-legend">
+                  <span class="qkv-leg-lo" style="color:#2563eb">min</span>
+                  <canvas id="{dot_id}_leg" width="120" height="12"></canvas>
+                  <span class="qkv-leg-hi" style="color:#dc2626">max &nbsp;&nbsp; &#x2193; avg across layers</span>
+                </div>
+              </div>
+              <div class="qkv-charts-col">
+                <div class="chart-wrap">
+                  <h4>&#x2016;Attended V&#x2016; per layer</h4>
+                  <canvas id="{norm_id}"></canvas>
+                </div>
+                <div class="chart-wrap">
+                  <h4>Attention entropy per layer</h4>
+                  <canvas id="{ent_id}"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>"""
+
+        js = f"""
+          (function() {{
+            const qkv = {qkv_json};
+            const nL = qkv.num_layers, nT = qkv.seq_len;
+            const cellW = Math.max(2, Math.min(14, Math.floor(900 / nT)));
+            const cellH = Math.max(10, Math.min(22, Math.floor(480 / nL)));
+
+            // ── shared color helpers ────────────────────────────────────────
+            function heatColor(t) {{
+              // dark blue → cyan → yellow (sequential, for softmax weights)
+              const r = Math.round(Math.min(255, 255 * Math.max(0, 2*t - 0.5)));
+              const g = Math.round(Math.min(255, 255 * Math.max(0, 2*t)));
+              const b = Math.round(255 * Math.max(0, 1 - 3*t));
+              return `rgb(${{r}},${{g}},${{b}})`;
+            }}
+            function divColor(t) {{
+              // blue (0) → white (0.5) → red (1) — diverging for raw scores
+              if (t < 0.5) {{
+                const s = 1 - t * 2;
+                return `rgb(${{Math.round(255*(1-s))}},  ${{Math.round(255*(1-s))}}, 255)`;
+              }} else {{
+                const s = (t - 0.5) * 2;
+                return `rgb(255, ${{Math.round(255*(1-s))}}, ${{Math.round(255*(1-s))}})`;
+              }}
+            }}
+
+            // ── helper to draw a heatmap on a canvas ───────────────────────
+            function drawHeatmap(canvasId, rows, colorFn, symmetric) {{
+              const canvas = document.getElementById(canvasId);
+              if (!canvas) return;
+              canvas.width  = cellW * nT;
+              canvas.height = cellH * nL;
+              const ctx = canvas.getContext('2d');
+
+              let globalMin = Infinity, globalMax = -Infinity;
+              rows.forEach(row => {{
+                if (!row) return;
+                row.forEach(v => {{ if (v < globalMin) globalMin = v; if (v > globalMax) globalMax = v; }});
+              }});
+              if (symmetric) {{
+                const absMax = Math.max(Math.abs(globalMin), Math.abs(globalMax));
+                globalMin = -absMax; globalMax = absMax;
+              }}
+              const range = globalMax - globalMin || 1;
+
+              rows.forEach((row, li) => {{
+                if (!row) return;
+                row.forEach((v, pi) => {{
+                  const t = (v - globalMin) / range;
+                  ctx.fillStyle = colorFn(Math.min(1, Math.max(0, t)));
+                  ctx.fillRect(pi * cellW, li * cellH, cellW, cellH);
+                }});
+                if (li % 4 === 0) {{
+                  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+                  ctx.font = `${{Math.max(8, cellH - 2)}}px monospace`;
+                  ctx.fillText(li, 2, li * cellH + cellH - 2);
+                }}
+              }});
+              return {{ globalMin, globalMax }};
+            }}
+
+            // ── helper to draw a legend strip ──────────────────────────────
+            function drawLegend(canvasId, colorFn) {{
+              const leg = document.getElementById(canvasId);
+              if (!leg) return;
+              const lctx = leg.getContext('2d');
+              for (let x = 0; x < 120; x++) {{
+                lctx.fillStyle = colorFn(x / 119);
+                lctx.fillRect(x, 0, 1, leg.height);
+              }}
+            }}
+
+            // ── draw 5px avg band below a heatmap ──────────────────────────
+            function drawAvgBand(canvasId, rows, colorFn, symmetric) {{
+              const canvas = document.getElementById(canvasId);
+              if (!canvas) return;
+              const bandH = 5;
+              canvas.width  = cellW * nT;
+              canvas.height = bandH;
+              const ctx = canvas.getContext('2d');
+
+              // compute per-position average across non-null layers
+              const sums = new Float64Array(nT);
+              const counts = new Uint32Array(nT);
+              rows.forEach(row => {{
+                if (!row) return;
+                row.forEach((v, pi) => {{ sums[pi] += v; counts[pi]++; }});
+              }});
+              const avgs = Array.from(sums, (s, i) => counts[i] ? s / counts[i] : null);
+
+              let lo = Infinity, hi = -Infinity;
+              avgs.forEach(v => {{ if (v !== null) {{ if (v < lo) lo = v; if (v > hi) hi = v; }} }});
+              if (symmetric) {{ const a = Math.max(Math.abs(lo), Math.abs(hi)); lo = -a; hi = a; }}
+              const range = hi - lo || 1;
+
+              avgs.forEach((v, pi) => {{
+                if (v === null) return;
+                const t = Math.min(1, Math.max(0, (v - lo) / range));
+                ctx.fillStyle = colorFn(t);
+                ctx.fillRect(pi * cellW, 0, cellW, bandH);
+              }});
+            }}
+
+            // ── softmax attention weight heatmap + avg band ────────────────
+            drawHeatmap('{hm_id}', qkv.attn_weights, heatColor, false);
+            drawLegend('{hm_id}_leg', heatColor);
+            // drawAvgBand('{hm_avg_id}', qkv.attn_weights, heatColor, false);
+
+            // ── raw q·k dot-product heatmap + avg band (diverging) ─────────
+            drawHeatmap('{dot_id}', qkv.q_k_dot, divColor, true);
+            drawLegend('{dot_id}_leg', divColor);
+            // drawAvgBand('{dot_avg_id}', qkv.q_k_dot, divColor, true);
+          }})();
+
+          new Chart(document.getElementById('{norm_id}'), {{
+            type: 'bar',
+            data: {norm_data},
+            options: {{
+              animation: false, maintainAspectRatio: false,
+              plugins: {{ legend: {{ display: false }} }},
+              scales: {{
+                x: {{ title: {{ display: true, text: 'Layer' }} }},
+                y: {{ title: {{ display: true, text: '‖attended V‖' }}, min: 0 }}
+              }}
+            }}
+          }});
+
+          new Chart(document.getElementById('{ent_id}'), {{
+            type: 'bar',
+            data: {ent_data},
+            options: {{
+              animation: false, maintainAspectRatio: false,
+              plugins: {{ legend: {{ display: false }} }},
+              scales: {{
+                x: {{ title: {{ display: true, text: 'Layer' }} }},
+                y: {{ title: {{ display: true, text: 'Entropy (nats)' }}, min: 0 }}
+              }}
+            }}
+          }});"""
+
         return html, js
 
     # ── inter-run sections (only computed when multiple runs exist) ──────────
@@ -1120,7 +1717,13 @@ def generate_html_report(
         else:
             topk_html = '<p class="topk-missing">Top-k predictions not captured for this run. Set <code>capture.top_k_probs &gt; 0</code> and re-run.</p>'
 
-        ref_html, ref_js = _build_ref_comparison_block(run_ref_metrics.get(run_name) or [], idx)
+        ref_html, ref_js = _build_ref_comparison_block(
+            run_ref_metrics.get(run_name) or [],
+            run_ref_qkv_metrics.get(run_name) or [],
+            run_ref_qkdot_metrics.get(run_name) or [],
+            idx,
+        )
+        qkv_html, qkv_js = _build_qkv_attn_block(run_qkv_attn.get(run_name), idx)
 
         intra_sections_html += f"""
         <section class="pair-card">
@@ -1137,12 +1740,13 @@ def generate_html_report(
             <table class="summary-table">{_SUMMARY_THEAD}<tbody>{_summary_table_rows(pr_s)}</tbody></table>
           </div>
           {ref_html}
+          {qkv_html}
           <div class="state-block">
             <h3 class="state-heading">Generation step top-k explorer</h3>
             {topk_html}
           </div>
         </section>
-        <script>{js}{topk_js}{ref_js}</script>"""
+        <script>{js}{topk_js}{ref_js}{qkv_js}</script>"""
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1383,6 +1987,25 @@ def generate_html_report(
     .role-avg-block {{ margin-top: 1.25rem; padding-top: 1rem; border-top: 1px dashed #d97706; }}
     .role-avg-title {{ font-size: 0.85rem; font-weight: 700; color: #334155; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.4rem; }}
     table.ref-summary th, table.ref-summary td {{ font-size: 0.75rem; }}
+    /* ── QKV attention canvas ───────────────────────────────────────────── */
+    .qkv-block {{ background: #f0f4ff; border-top: 2px solid #6366f1; }}
+    h3.qkv-heading {{ background: #6366f1 !important; }}
+    .qkv-layout {{ display: grid; grid-template-columns: 1fr 380px; gap: 1.5rem; align-items: start; }}
+    @media (max-width: 900px) {{ .qkv-layout {{ grid-template-columns: 1fr; }} }}
+    .qkv-hm-col h4, .qkv-chart-title {{ font-size: 0.82rem; font-weight: 600; color: #475569; margin: 0 0 0.4rem; }}
+    .qkv-hm-scroll {{ overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 4px;  }}
+    .qkv-hm-scroll canvas {{ display: block; image-rendering: pixelated; }}
+    .qkv-avg-band {{ margin-top: 2px; }}
+    .qkv-hm-legend {{ display: flex; align-items: center; gap: 0.4rem; margin-top: 0.3rem; font-size: 0.72rem; color: #64748b; }}
+    .qkv-leg-lo, .qkv-leg-hi {{ white-space: nowrap; }}
+    .qkv-hm-legend canvas {{ border-radius: 2px; border: 1px solid #e2e8f0; flex-shrink: 0; }}
+    .qkv-charts-col {{ display: flex; flex-direction: column; gap: 1rem; }}
+    .qkv-charts-col .chart-wrap canvas {{ max-height: 200px !important; }}
+    /* ── q·k dot canvas row ──────────────────────────────────────────────── */
+    .qkdot-canvases-row {{ display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.75rem; }}
+    .qkdot-canvas-wrap {{ flex: 1 1 auto; min-width: 0; }}
+    .qkdot-canvas-title {{ font-size: 0.75rem; font-weight: 600; color: #4f46e5; margin: 0 0 0.3rem; }}
+    .qkdot-canvas-wrap .qkv-hm-scroll {{ border-radius: 4px; }}
   </style>
 </head>
 <body>
@@ -1556,6 +2179,9 @@ def main(runs_dir: Path) -> None:
     intra_cosines: list[dict] = []
     run_topk: dict[str, list[dict] | None] = {}
     run_ref_metrics: dict[str, list[dict] | None] = {}
+    run_ref_qkv_metrics: dict[str, list[dict] | None] = {}
+    run_ref_qkdot_metrics: dict[str, list[dict] | None] = {}
+    run_qkv_attn: dict[str, dict | None] = {}
 
     for run in runs:
         run_name = run.path.name
@@ -1584,6 +2210,33 @@ def main(runs_dir: Path) -> None:
             if ref_states and not snapshots:
                 print("    references found but no conversation snapshots — re-run to capture")
             run_ref_metrics[run_name] = None
+
+        ref_qkv = load_reference_qkv(run)
+        snap_qkv = load_snapshot_qkv(run) if ref_qkv else None
+        if ref_qkv and snap_qkv:
+            print(
+                f"    ref qkv: {list(ref_qkv.keys())}  ×  {len(snap_qkv)} snapshot(s) — "
+                f"computing avg / NAS / SFA per (msg, ref, layer)"
+            )
+            run_ref_qkv_metrics[run_name] = compute_snapshot_reference_qkv_metrics(
+                snap_qkv, ref_qkv, run.num_layers
+            )
+        else:
+            run_ref_qkv_metrics[run_name] = None
+
+        qkdot = compute_snapshot_reference_qkdot_metrics(run)
+        run_ref_qkdot_metrics[run_name] = qkdot
+        if qkdot:
+            print(f"    q_k_dot metrics: {len(qkdot)} snapshot(s) × {len(qkdot[0]['by_reference'])} ref(s)")
+        else:
+            print("    q_k_dot metrics: not available (qkv not captured or refs/snapshots missing)")
+
+        qkv = load_qkv_attention_data(run)
+        run_qkv_attn[run_name] = qkv
+        if qkv:
+            print(f"    qkv attn: {qkv['num_layers']} layers × {qkv['seq_len']} positions")
+        else:
+            print("    qkv attn: not captured (capture.qkv=false)")
 
         for src, row in summary_df.iterrows():
             intra_summaries.append(
@@ -1631,6 +2284,9 @@ def main(runs_dir: Path) -> None:
         intra_cosines_df,
         run_topk,
         run_ref_metrics,
+        run_ref_qkv_metrics,
+        run_ref_qkdot_metrics,
+        run_qkv_attn,
         html_path,
         lastest_path,
     )
