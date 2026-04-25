@@ -1,0 +1,433 @@
+"""Numpy kernels for per-npz and pair-compare computations."""
+from __future__ import annotations
+
+import numpy as np
+
+SOURCES = ("hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last")
+
+
+def _discover_layers(keys: list[str]) -> list[int]:
+    idx: set[int] = set()
+    for k in keys:
+        if k.startswith("layer_") and "/" in k:
+            head = k.split("/", 1)[0]
+            try:
+                idx.add(int(head.split("_")[1]))
+            except (IndexError, ValueError):
+                continue
+    return sorted(idx)
+
+
+def layers_available(tensors: dict[str, np.ndarray]) -> list[int]:
+    layers = _discover_layers(list(tensors.keys()))
+    if layers:
+        return layers
+    # Snapshot/reference NPZs may only carry qkv_last (L, D); derive layer count from it.
+    if "qkv_last" in tensors:
+        arr = np.asarray(tensors["qkv_last"])
+        if arr.ndim == 2:
+            return list(range(arr.shape[0]))
+    return []
+
+
+def has_attention(tensors: dict[str, np.ndarray]) -> bool:
+    return any(k.endswith("/attn_weights") for k in tensors)
+
+
+def has_qk(tensors: dict[str, np.ndarray]) -> bool:
+    return any(k.endswith("/q") for k in tensors) and any(k.endswith("/k") for k in tensors)
+
+
+def has_qkv_last(tensors: dict[str, np.ndarray]) -> bool:
+    return "qkv_last" in tensors
+
+
+def qkv_last_matrix(tensors: dict[str, np.ndarray]) -> np.ndarray:
+    """Return the per-layer ⟨q,k⟩·v row stack — shape (num_layers, D)."""
+    arr = np.asarray(tensors["qkv_last"], dtype=np.float32)
+    if arr.ndim != 2:
+        raise ValueError(f"qkv_last expected 2D, got {arr.shape}")
+    return arr
+
+
+# ---------------------------------------------------------------- attention
+
+def attention_matrix(tensors: dict[str, np.ndarray], layer: int, head_mean: bool = True) -> np.ndarray:
+    """Return softmax attention for a layer.
+
+    Handles three storage shapes:
+      (B, H, T_q, T_kv) — full step capture          → drop batch → (H, T_q, T_kv)
+      (H, T_kv)         — pooled reference (1 query)  → expand     → (H, 1, T_kv)
+      (T_q, T_kv)       — already head-averaged        → as-is
+    Returns (T_q, T_kv) when head_mean=True, else (H, T_q, T_kv).
+    """
+    key = f"layer_{layer:02d}/attn_weights"
+    arr = np.asarray(tensors[key], dtype=np.float32)
+    if arr.ndim == 4:           # (B, H, T_q, T_kv)
+        arr = arr[0]            # (H, T_q, T_kv)
+    elif arr.ndim == 2:         # (H, T_kv) — pooled reference
+        arr = arr[:, np.newaxis, :]  # (H, 1, T_kv)
+    if head_mean:
+        return arr.mean(axis=0)  # (T_q, T_kv)
+    return arr
+
+
+def qk_scores(tensors: dict[str, np.ndarray], layer: int) -> np.ndarray:
+    """Compute raw q·k/sqrt(dk) averaged over heads — shape (T_q, T_kv).
+
+    Handles:
+      (B, T, D) — full per-token capture  → drop batch → (T, D)
+      (D,)      — pooled reference         → reshape   → (1, D)
+    """
+    q = np.asarray(tensors[f"layer_{layer:02d}/q"], dtype=np.float32)
+    k = np.asarray(tensors[f"layer_{layer:02d}/k"], dtype=np.float32)
+    if q.ndim == 3:
+        q = q[0]
+        k = k[0]
+    elif q.ndim == 1:           # pooled reference: (D,) → (1, D)
+        q = q[np.newaxis, :]
+        k = k[np.newaxis, :]
+    # Attempt head split using q as reference. Assume head_dim is inferable when Hq*D == q.shape[-1].
+    # Use 64 as a common head_dim; fall back to a single-head score over the flat features.
+    T, qdim = q.shape
+    Tk, kdim = k.shape
+    head_dim = _infer_head_dim(qdim, kdim)
+    if head_dim is None:
+        scores = q @ k.T / np.sqrt(qdim)
+        return scores
+    num_q_heads = qdim // head_dim
+    num_k_heads = kdim // head_dim
+    qh = q.reshape(T, num_q_heads, head_dim)
+    kh = k.reshape(Tk, num_k_heads, head_dim)
+    # Average over q-heads (and broadcast kv-heads if grouped)
+    # groups per kv-head:
+    group = max(1, num_q_heads // num_k_heads)
+    # (T, Hq, D) → group kv: for each q-head i, use kv-head i // group
+    out = np.zeros((T, Tk), dtype=np.float32)
+    for h in range(num_q_heads):
+        kh_idx = h // group if num_k_heads > 0 else 0
+        out += qh[:, h, :] @ kh[:, kh_idx, :].T
+    out /= max(num_q_heads, 1)
+    return out / np.sqrt(head_dim)
+
+
+def _infer_head_dim(qdim: int, kdim: int) -> int | None:
+    for d in (128, 64, 96, 80, 48, 32):
+        if qdim % d == 0 and kdim % d == 0:
+            return d
+    return None
+
+
+def attention_entropy(tensors: dict[str, np.ndarray]) -> list[float]:
+    """Mean attention entropy per layer (nats). Higher = more diffuse. Returns list indexed by layer."""
+    layers = layers_available(tensors)
+    out: list[float] = []
+    for layer in layers:
+        key = f"layer_{layer:02d}/attn_weights"
+        if key not in tensors:
+            out.append(float("nan"))
+            continue
+        arr = np.asarray(tensors[key], dtype=np.float32)
+        if arr.ndim == 4:
+            arr = arr[0]
+        # arr: (H, T, T); entropy per query token then mean
+        eps = 1e-9
+        ent = -(arr * np.log(arr + eps)).sum(axis=-1)  # (H, T)
+        out.append(float(ent.mean()))
+    return out
+
+
+def stack_all_layers(extract) -> np.ndarray:
+    """Stack per-layer (T, T) matrices vertically (list-style), returning (L*T, T) image.
+
+    `extract` is a callable layer_idx -> (T, T).
+    """
+    mats: list[np.ndarray] = []
+    for m in extract:
+        mats.append(m)
+    return np.vstack(mats)
+
+
+# ---------------------------------------------------------------- pair metrics
+
+def _per_layer_vectors(tensors: dict[str, np.ndarray], source: str) -> dict[int, np.ndarray]:
+    """Collect per-layer tensors for a source, reduced to (T, D) by dropping batch dim."""
+    # qkv_last is stored as one stacked (L, D) matrix — expose each row as a (1, D) layer vector.
+    if source == "qkv_last":
+        if "qkv_last" not in tensors:
+            return {}
+        arr = qkv_last_matrix(tensors)
+        return {layer: arr[layer][None, :] for layer in range(arr.shape[0])}
+
+    out: dict[int, np.ndarray] = {}
+    for layer in layers_available(tensors):
+        key = f"layer_{layer:02d}/{source}"
+        if key not in tensors:
+            continue
+        arr = np.asarray(tensors[key], dtype=np.float32)
+        if arr.ndim == 3:
+            arr = arr[0]
+        elif arr.ndim == 1:
+            arr = arr[None, :]  # (1, D) — pooled snapshot fallback
+        out[layer] = arr
+    return out
+
+
+def _cosine_per_token(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    # a, b: (T, D). returns (T,)
+    na = np.linalg.norm(a, axis=-1) + 1e-12
+    nb = np.linalg.norm(b, axis=-1) + 1e-12
+    return (a * b).sum(axis=-1) / (na * nb)
+
+
+def pair_metrics(
+    a: dict[str, np.ndarray],
+    b: dict[str, np.ndarray],
+    sources: list[str],
+) -> dict[str, dict[str, list[float]]]:
+    """For each source, compute per-layer:
+        mean_cos, min_cos, mean_mae, mean_overlap (top-1% Jaccard), std_diff.
+    Returns dict[source] = { metric: [value per layer] }. Layers are intersected.
+    """
+    layers = sorted(set(layers_available(a)) & set(layers_available(b)))
+    result: dict[str, dict[str, list[float]]] = {}
+    for src in sources:
+        a_by = _per_layer_vectors(a, src)
+        b_by = _per_layer_vectors(b, src)
+        metrics = {k: [] for k in ("mean_cos", "min_cos", "mean_mae", "mean_overlap", "std_diff", "layers")}
+        for layer in layers:
+            if layer not in a_by or layer not in b_by:
+                continue
+            av = a_by[layer]
+            bv = b_by[layer]
+            # Align on min T dim (in case different lengths)
+            T = min(av.shape[0], bv.shape[0])
+            av = av[:T]
+            bv = bv[:T]
+            cos_vec = _cosine_per_token(av, bv)
+            diff = av - bv
+            metrics["layers"].append(layer)
+            metrics["mean_cos"].append(float(cos_vec.mean()))
+            metrics["min_cos"].append(float(cos_vec.min()))
+            metrics["mean_mae"].append(float(np.mean(np.abs(diff))))
+            metrics["std_diff"].append(float(np.std(diff)))
+            metrics["mean_overlap"].append(_top1_jaccard(av, bv))
+        result[src] = metrics
+    return result
+
+
+def multi_metrics(
+    tensors_list: list[dict[str, np.ndarray]],
+    sources: list[str],
+) -> dict:
+    """All-pairs metrics for >=2 references. Returns:
+        { 'pairs': [{ 'i': int, 'j': int, 'metrics': pair_metrics_result }, ...] }
+    """
+    pairs: list[dict] = []
+    n = len(tensors_list)
+    for i in range(n):
+        for j in range(i + 1, n):
+            pairs.append({
+                "i": i,
+                "j": j,
+                "metrics": pair_metrics(tensors_list[i], tensors_list[j], sources),
+            })
+    return {"pairs": pairs}
+
+
+def _top1_jaccard(a: np.ndarray, b: np.ndarray) -> float:
+    """Average-over-token Jaccard of top-1% channel indices (by |value|)."""
+    if a.ndim == 1:
+        return _top1_jaccard_vec(a, b)
+    T, D = a.shape
+    k = max(1, D // 100)
+    jac_vals = []
+    for t in range(T):
+        idx_a = set(np.argpartition(np.abs(a[t]), -k)[-k:].tolist())
+        idx_b = set(np.argpartition(np.abs(b[t]), -k)[-k:].tolist())
+        inter = len(idx_a & idx_b)
+        union = len(idx_a | idx_b)
+        jac_vals.append(inter / union if union else 0.0)
+    return float(np.mean(jac_vals))
+
+
+def _top1_jaccard_vec(a: np.ndarray, b: np.ndarray) -> float:
+    D = a.shape[0]
+    k = max(1, D // 100)
+    idx_a = set(np.argpartition(np.abs(a), -k)[-k:].tolist())
+    idx_b = set(np.argpartition(np.abs(b), -k)[-k:].tolist())
+    inter = len(idx_a & idx_b)
+    union = len(idx_a | idx_b)
+    return inter / union if union else 0.0
+
+
+# ---------------------------------------------------------------- advanced multi-ref analysis
+
+
+def _linear_cka(X: np.ndarray, Y: np.ndarray) -> float | None:
+    """Efficient linear CKA via kernel matrices: O(T²D) not O(D²T).
+
+    Returns None for T≤1 (uncentered CKA is trivially 1 for rank-1 captures).
+    """
+    T = min(X.shape[0], Y.shape[0])
+    if T <= 1:
+        return None
+    X = X[:T].astype(np.float64) - X[:T].mean(axis=0)
+    Y = Y[:T].astype(np.float64) - Y[:T].mean(axis=0)
+    K_xx = X @ X.T   # (T, T)
+    K_yy = Y @ Y.T
+    num = float(np.trace(K_xx @ K_yy))
+    denom = float(np.linalg.norm(K_xx, "fro") * np.linalg.norm(K_yy, "fro"))
+    return num / denom if denom > 1e-12 else None
+
+
+def svd_analysis(
+    tensors_list: list[dict[str, np.ndarray]],
+    sources: list[str],
+    top_k: int = 32,
+) -> dict:
+    """Per-ref per-layer SVD: top-K singular values, spectral norm, nuclear norm, effective rank.
+
+    For T=1 captures: spectral/nuclear norm = ‖v‖₂; effective_rank=null (trivially 1).
+    """
+    result: dict = {}
+    for src in sources:
+        by_ref = [_per_layer_vectors(t, src) for t in tensors_list]
+        layers = sorted(set().union(*[set(d.keys()) for d in by_ref]))
+        ref_results = []
+        for rd in by_ref:
+            spectra_r: list = []
+            er_r: list = []
+            nn_r: list = []
+            sn_r: list = []
+            for layer in layers:
+                if layer not in rd:
+                    spectra_r.append(None)
+                    er_r.append(None)
+                    nn_r.append(None)
+                    sn_r.append(None)
+                    continue
+                arr = np.asarray(rd[layer], dtype=np.float64)
+                T = arr.shape[0]
+                if T > 1:
+                    arr_c = arr - arr.mean(axis=0)
+                    s = np.linalg.svd(arr_c, compute_uv=False)
+                    s_pos = s[s > 1e-12]
+                    spectra_r.append(s[:top_k].tolist())
+                    if s_pos.size > 0:
+                        p = s_pos / s_pos.sum()
+                        er_r.append(float(np.exp(-np.sum(p * np.log(p + 1e-12)))))
+                    else:
+                        er_r.append(None)
+                    nn_r.append(float(s.sum()))
+                    sn_r.append(float(s[0]) if s.size > 0 else None)
+                else:
+                    norm = float(np.linalg.norm(arr[0]))
+                    spectra_r.append([norm])
+                    er_r.append(None)
+                    nn_r.append(norm)
+                    sn_r.append(norm)
+            ref_results.append({
+                "spectra": spectra_r,
+                "effective_rank": er_r,
+                "nuclear_norm": nn_r,
+                "spectral_norm": sn_r,
+            })
+        result[src] = {"layers": [int(la) for la in layers], "refs": ref_results}
+    return result
+
+
+def cka_analysis(
+    tensors_list: list[dict[str, np.ndarray]],
+    sources: list[str],
+) -> dict:
+    """Per-layer linear CKA matrix (N×N). None where T≤1 or data missing."""
+    n = len(tensors_list)
+    result: dict = {}
+    for src in sources:
+        by_ref = [_per_layer_vectors(t, src) for t in tensors_list]
+        layers = sorted(set().union(*[set(d.keys()) for d in by_ref]))
+        matrices = []
+        for layer in layers:
+            mat = []
+            for i in range(n):
+                row = []
+                for j in range(n):
+                    if layer in by_ref[i] and layer in by_ref[j]:
+                        row.append(_linear_cka(by_ref[i][layer], by_ref[j][layer]))
+                    else:
+                        row.append(None)
+                mat.append(row)
+            matrices.append(mat)
+        result[src] = {"layers": [int(la) for la in layers], "matrices": matrices}
+    return result
+
+
+def pca_analysis(
+    tensors_list: list[dict[str, np.ndarray]],
+    sources: list[str],
+) -> dict:
+    """PCA on stacked per-ref per-layer mean vectors → 2D layer-trajectory coordinates."""
+    result: dict = {}
+    for src in sources:
+        by_ref = [_per_layer_vectors(t, src) for t in tensors_list]
+        layers = sorted(set().union(*[set(d.keys()) for d in by_ref]))
+
+        points: list[np.ndarray] = []
+        ref_idxs: list[int] = []
+        layer_idxs: list[int] = []
+        for li, layer in enumerate(layers):
+            for ri, rd in enumerate(by_ref):
+                if layer in rd:
+                    points.append(rd[layer].mean(axis=0).astype(np.float64))
+                    ref_idxs.append(ri)
+                    layer_idxs.append(li)
+
+        if len(points) < 2:
+            result[src] = {
+                "coords": [], "ref_indices": [], "layer_indices": [],
+                "layers": [int(la) for la in layers], "explained_variance": [0.0, 0.0],
+            }
+            continue
+
+        X = np.stack(points)
+        X_c = X - X.mean(axis=0)
+        _, s, Vt = np.linalg.svd(X_c, full_matrices=False)
+        total_var = float((s ** 2).sum()) or 1.0
+        n_comp = min(2, Vt.shape[0])
+        proj_raw = X_c @ Vt[:n_comp].T
+        # Guarantee 2-column output even when rank < 2
+        if n_comp < 2:
+            zeros = np.zeros((proj_raw.shape[0], 2 - n_comp))
+            proj_raw = np.concatenate([proj_raw, zeros], axis=1)
+        ev = [
+            float(s[0] ** 2 / total_var),
+            float(s[1] ** 2 / total_var) if len(s) > 1 else 0.0,
+        ]
+        result[src] = {
+            "coords": proj_raw.tolist(),
+            "ref_indices": ref_idxs,
+            "layer_indices": layer_idxs,
+            "layers": [int(la) for la in layers],
+            "explained_variance": ev,
+        }
+    return result
+
+
+# ---------------------------------------------------------------- pair heatmap derivatives
+
+def diff_matrices(a: np.ndarray, b: np.ndarray) -> dict[str, np.ndarray]:
+    """Given two (T, T) matrices, produce the derivative heatmaps."""
+    abs_diff = np.abs(a - b)
+    sq_err = (a - b) ** 2
+    hadamard = a * b
+    # Normalized ratio: a / (b + eps), clipped for visualization sanity
+    eps = 1e-9
+    ratio = a / (np.abs(b) + eps)
+    ratio = np.clip(ratio, -50.0, 50.0)
+    return {
+        "abs_diff": abs_diff,
+        "sq_err": sq_err,
+        "hadamard": hadamard,
+        "ratio": ratio,
+    }

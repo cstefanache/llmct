@@ -115,18 +115,15 @@ def write_steps_json(paths: RunPaths, entries: list[dict[str, Any]]) -> None:
     paths.steps_json.write_text(json.dumps({"steps": entries}, indent=2, default=str))
 
 
-def write_reference_state(run_dir: Path, label: str, state: dict[str, np.ndarray]) -> None:
-    """Save reference state to {run_dir}/references/ref_{label}.npz.
+def write_reference_state(run_dir: Path, label: str, tensors: dict[str, np.ndarray]) -> None:
+    """Save a reference prefill's full captured tensors to references/ref_{label}.npz.
 
-    Each entry in state is (num_layers, hidden_size); stored per-layer as layer_NN/source.
+    ``tensors`` is the raw dict produced by ``capture_reference_prefill`` — same key
+    convention as the per-step NPZ files (layer_NN/hidden_in, layer_NN/attn_weights, ...).
     """
     ref_dir = run_dir / "references"
     ref_dir.mkdir(exist_ok=True)
-    npz_data: dict[str, np.ndarray] = {}
-    for src, arr in state.items():
-        for layer_idx in range(arr.shape[0]):
-            npz_data[f"layer_{layer_idx:02d}/{src}"] = arr[layer_idx]
-    np.savez_compressed(ref_dir / f"ref_{label}.npz", **npz_data)
+    np.savez_compressed(ref_dir / f"ref_{label}.npz", **tensors)
 
 
 def write_reference_index(run_dir: Path, labels: list[str]) -> None:
@@ -137,19 +134,16 @@ def write_reference_index(run_dir: Path, labels: list[str]) -> None:
 
 
 def write_conversation_snapshot(
-    run_dir: Path, idx: int, role: str, state: dict[str, np.ndarray]
+    run_dir: Path, idx: int, role: str, tensors: dict[str, np.ndarray]
 ) -> None:
-    """Save one conversation prefix snapshot to {run_dir}/conversation_snapshots/snapshot_NN_role.npz.
+    """Save one conversation prefix snapshot to conversation_snapshots/snapshot_NN_role.npz.
 
-    Each entry in state is (num_layers, hidden_size); stored per-layer as layer_NN/source.
+    ``tensors`` is the raw dict produced by ``capture_reference_prefill`` — same key
+    convention as the per-step NPZ files.
     """
     snap_dir = run_dir / "conversation_snapshots"
     snap_dir.mkdir(exist_ok=True)
-    npz_data: dict[str, np.ndarray] = {}
-    for src, arr in state.items():
-        for layer_idx in range(arr.shape[0]):
-            npz_data[f"layer_{layer_idx:02d}/{src}"] = arr[layer_idx]
-    np.savez_compressed(snap_dir / f"snapshot_{idx:02d}_{role}.npz", **npz_data)
+    np.savez_compressed(snap_dir / f"snapshot_{idx:02d}_{role}.npz", **tensors)
 
 
 def write_conversation_snapshot_index(

@@ -173,9 +173,6 @@ def run_generation(
         cur_input = torch.tensor([[next_id]], device=device, dtype=input_ids.dtype)
 
 
-REFERENCE_SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out"]
-
-
 def capture_reference_prefill(
     model: torch.nn.Module,
     tokenizer,
@@ -183,51 +180,63 @@ def capture_reference_prefill(
     messages: list[Message],
     cap_cfg: CaptureConfig,
     device: torch.device,
-) -> dict[str, np.ndarray]:
-    """Run a single prefill pass and return last-token activations per layer.
+) -> tuple[dict[str, np.ndarray], list[int]]:
+    """Run a single prefill pass and return the captured tensors plus input token ids.
 
-    Returns {source: (num_layers, hidden_size)} for hidden_in/hidden_out/attn_out/mlp_down_out.
+    Residual-stream sources (hidden_in/hidden_out/attn_out/mlp_down_out/mlp_*),
+    embeddings, and logits are kept full per-token (1, T, D).
+
+    Per-layer q/k/v are collapsed into a single ``qkv_last`` tensor of shape
+    (num_layers, D): at the last prefill token, each row is
+    ``(⟨q, k⟩ / √d_head) · v``. This is length-independent, so snapshots with
+    different prompt lengths are directly comparable.
+
+    ``attn_weights`` is dropped entirely (T_kv-indexed ⇒ prompt-length-specific).
+    Step files keep attn_weights (fixed-length within a run).
     """
     prompt_cfg = PromptConfig(messages=messages, run_at_each_message=False)
     input_ids = _build_input_ids(tokenizer, prompt_cfg, device)
 
     with torch.no_grad(), CaptureContext(model, arch, cap_cfg) as ctx:
-        model(
+        out = model(
             input_ids=input_ids,
             past_key_values=None,
             use_cache=False,
-            output_attentions=False,
+            output_attentions=cap_cfg.attention_weights,
             return_dict=True,
         )
+        ctx.record_attentions(getattr(out, "attentions", None))
+        ctx.record_logits(out.logits)
         tensors = ctx.drain()
 
-    result: dict[str, np.ndarray] = {}
-    for src in REFERENCE_SOURCES:
-        layers_arr = []
-        for layer in range(arch.num_layers):
-            key = f"layer_{layer:02d}/{src}"
-            if key in tensors:
-                arr = np.asarray(tensors[key], dtype=np.float32)
-                # shape: (B, T, H) — take last token position
-                vec = arr[0, -1, :] if arr.ndim == 3 else arr.flatten()[:arch.hidden_size]
-            else:
-                vec = np.zeros(arch.hidden_size, dtype=np.float32)
-            layers_arr.append(vec)
-        result[src] = np.stack(layers_arr)  # (num_layers, hidden_size)
+    rows: list[np.ndarray | None] = []
+    for layer in range(arch.num_layers):
+        q_key = f"layer_{layer:02d}/q"
+        k_key = f"layer_{layer:02d}/k"
+        v_key = f"layer_{layer:02d}/v"
+        if q_key in tensors and k_key in tensors and v_key in tensors:
+            q = np.asarray(tensors[q_key], dtype=np.float32)
+            k = np.asarray(tensors[k_key], dtype=np.float32)
+            v = np.asarray(tensors[v_key], dtype=np.float32)
+            q = q[0, -1, :] if q.ndim == 3 else q[0]
+            k = k[0, -1, :] if k.ndim == 3 else k[0]
+            v = v[0, -1, :] if v.ndim == 3 else v[0]
+            m = min(q.shape[0], k.shape[0])
+            score = float(np.dot(q[:m], k[:m]) / np.sqrt(m))
+            rows.append(score * v)
+        else:
+            rows.append(None)
 
-    for qk in ("q", "k", "v"):
-        vecs: list[np.ndarray | None] = []
-        for layer in range(arch.num_layers):
-            key = f"layer_{layer:02d}/{qk}"
-            if key in tensors:
-                arr = np.asarray(tensors[key], dtype=np.float32)
-                vecs.append(arr[0, -1, :] if arr.ndim == 3 else arr[0])
-            else:
-                vecs.append(None)
-        if any(v is not None for v in vecs):
-            dim = next(v for v in vecs if v is not None).shape[0]
-            result[qk] = np.stack(
-                [v if v is not None else np.zeros(dim, dtype=np.float32) for v in vecs]
-            )
+    if any(r is not None for r in rows):
+        dim = next(r for r in rows if r is not None).shape[0]
+        tensors["qkv_last"] = np.stack(
+            [r if r is not None else np.zeros(dim, dtype=np.float32) for r in rows]
+        )
 
-    return result
+    for key in list(tensors.keys()):
+        if key.endswith("/attn_weights") or (
+            key.startswith("layer_") and key.endswith(("/q", "/k", "/v"))
+        ):
+            del tensors[key]
+
+    return tensors, input_ids[0].tolist()

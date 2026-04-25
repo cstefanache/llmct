@@ -9,3 +9,5 @@ runs/
 .DS_Store
 results
 post
+viewer_web/node_modules/
+viewer_web/dist/

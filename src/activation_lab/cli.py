@@ -26,10 +26,17 @@ app = typer.Typer(add_completion=False, help="Capture per-step LLM activations."
 console = Console()
 
 
+def _tensor_index(tensors: dict) -> dict:
+    return {
+        key: {"shape": list(arr.shape), "dtype": str(arr.dtype)}
+        for key, arr in tensors.items()
+    }
+
+
 def _capture_conversation_snapshots(
     scenario: Scenario, run_dir, model, tokenizer, arch, device
 ) -> None:
-    """Capture a prefill snapshot for each message prefix in the conversation."""
+    """Capture a full prefill snapshot for each message prefix in the conversation."""
     messages = scenario.prompt.messages
     if not messages:
         return
@@ -37,14 +44,19 @@ def _capture_conversation_snapshots(
     snap_info = []
     for i, msg in enumerate(messages):
         prefix = messages[: i + 1]
-        state = capture_reference_prefill(
+        tensors, input_ids = capture_reference_prefill(
             model, tokenizer, arch, prefix, scenario.capture, device
         )
-        write_conversation_snapshot(run_dir, i, msg.role, state)
+        write_conversation_snapshot(run_dir, i, msg.role, tensors)
         snap_info.append({
             "index": i,
             "role": msg.role,
             "content_preview": msg.content[:80],
+            "input_token_ids": input_ids,
+            "input_tokens": [tokenizer.decode([t]) for t in input_ids],
+            "seq_len": len(input_ids),
+            "tensors_file": f"snapshot_{i:02d}_{msg.role}.npz",
+            "tensor_index": _tensor_index(tensors),
         })
     write_conversation_snapshot_index(run_dir, snap_info)
     console.print(f"  [green]{len(messages)} snapshot(s) saved[/green]")
@@ -59,10 +71,10 @@ def _capture_reference_states(
     labels: list[str] = []
     for ref in scenario.reference_states:
         console.print(f"    [dim]reference '{ref.label}'[/dim]")
-        state = capture_reference_prefill(
+        tensors, _input_ids = capture_reference_prefill(
             model, tokenizer, arch, ref.messages, scenario.capture, device
         )
-        write_reference_state(run_dir, ref.label, state)
+        write_reference_state(run_dir, ref.label, tensors)
         labels.append(ref.label)
     write_reference_index(run_dir, labels)
     console.print(f"  [green]{len(labels)} reference(s) saved[/green]")
@@ -286,6 +298,28 @@ def logit_lens_cmd(
     dst = run.path / "logit_lens.json"
     dst.write_text(json.dumps(out, indent=2, default=str))
     console.print(f"[green]Wrote[/green] {dst}")
+
+
+@app.command()
+def serve(
+    runs_dir: Path = typer.Argument(Path("runs"), help="Directory containing run subfolders."),
+    host: str = typer.Option("127.0.0.1", help="Bind host."),
+    port: int = typer.Option(8000, help="Bind port."),
+    reload: bool = typer.Option(False, help="Enable uvicorn auto-reload (dev)."),
+) -> None:
+    """Run the report viewer backend (FastAPI)."""
+    import os as _os
+    import uvicorn
+
+    _os.environ["ACTIVATION_LAB_RUNS_DIR"] = str(runs_dir.resolve())
+    console.print(f"[bold]Serving[/bold] runs from {runs_dir.resolve()} on http://{host}:{port}")
+    uvicorn.run(
+        "activation_lab.viewer_server.app:create_app",
+        host=host,
+        port=port,
+        factory=True,
+        reload=reload,
+    )
 
 
 @app.command()
