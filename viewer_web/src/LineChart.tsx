@@ -27,10 +27,10 @@ export function LineChart(props: {
     const opts: uPlot.Options = {
       title: props.title,
       width: el.clientWidth || 600,
-      height: props.height ?? 220,
+      height: props.height ?? 320,
       series: [
         { label: "layer" },
-        ...props.series.map((s) => ({ label: s.label, stroke: s.stroke, width: 1.5 })),
+        ...props.series.map((s) => ({ label: s.label, stroke: s.stroke, width: 1.4 })),
       ],
       legend: { live: false },
       scales: { x: { time: false } },
@@ -40,7 +40,7 @@ export function LineChart(props: {
       ],
     };
     uref.current = new uPlot(opts, data, el);
-    const onResize = () => uref.current?.setSize({ width: el.clientWidth, height: props.height ?? 220 });
+    const onResize = () => uref.current?.setSize({ width: el.clientWidth, height: props.height ?? 320 });
     window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("resize", onResize);

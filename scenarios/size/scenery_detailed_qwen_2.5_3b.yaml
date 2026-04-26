@@ -1,4 +1,4 @@
-name: technical_detailed_qwen_3b
+name: scenery_detailed_qwen_3b
 model:
   id: Qwen/Qwen2.5-3B-Instruct
   dtype: float16

@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { Sidebar, Selection } from "./Sidebar";
-import { NpzRef, TreeNode } from "./api";
+import { NpzRef, NpzMeta, TreeNode, getNpzMeta } from "./api";
 import { RunOverviewTab } from "./RunOverviewTab";
 import { ConversationSnapshotsTab } from "./ConversationSnapshotsTab";
 import { ReferencesTab } from "./ReferencesTab";
 import { NpzAttentionTab } from "./NpzAttentionTab";
 import { PairCompareTab } from "./PairCompareTab";
 import { MultiCompareTab } from "./MultiCompareTab";
+import { pairTabLabel } from "./refLabels";
 
 const SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last"] as const;
 
@@ -32,16 +33,20 @@ function tabLabel(t: ActiveTabKey): string {
   if (t.kind === "group") return t.groupType;
   if (t.kind === "npz") return `${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return `compare all (${t.refs.length})`;
-  return `pair: ${t.a.name} ↔ ${t.b.name}`;
+  return pairTabLabel(t.a, t.b);
 }
 
 export function App() {
   const [selected, setSelected] = useState<Selection | null>(null);
   const [selectedNpz, setSelectedNpz] = useState<NpzRef[]>([]);
+  const [npzMetas, setNpzMetas] = useState<Record<string, NpzMeta>>({});
+  const [showKeys, setShowKeys] = useState(false);
   const [sources, setSources] = useState<string[]>(["hidden_out"]);
   const [tabs, setTabs] = useState<ActiveTabKey[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [pinnedTabs, setPinnedTabs] = useState<Set<string>>(new Set());
+
+  const metaKey = (ref: NpzRef) => `${ref.run_id}|${ref.kind}|${ref.name}`;
 
   const addTab = (t: ActiveTabKey) => {
     const id = tabId(t);
@@ -81,6 +86,14 @@ export function App() {
   };
 
   const onToggleNpz = (ref: NpzRef, node: TreeNode) => {
+    const rk = metaKey(ref);
+    const isAdding = !selectedNpz.find((p) => p.run_id === ref.run_id && p.kind === ref.kind && p.name === ref.name);
+    if (isAdding) {
+      getNpzMeta(ref).then((m) => setNpzMetas((prev) => ({ ...prev, [rk]: m }))).catch(console.error);
+    } else {
+      setNpzMetas((prev) => { const next = { ...prev }; delete next[rk]; return next; });
+    }
+
     setSelectedNpz((prev) => {
       const has = prev.find((p) => p.run_id === ref.run_id && p.kind === ref.kind && p.name === ref.name);
       const next = has ? prev.filter((p) => p !== has) : [...prev, ref];
@@ -158,32 +171,60 @@ export function App() {
             </label>
           ))}
           <span className="muted">{selectedNpz.length} npz selected</span>
+          {selectedNpz.length > 0 && (
+            <button className="btn-toggle" onClick={() => setShowKeys((v) => !v)}>
+              {showKeys ? "hide keys" : "show keys"}
+            </button>
+          )}
         </div>
 
-        <div className="tabs">
-          {tabs.map((t) => {
-            const id = tabId(t);
-            const pinned = pinnedTabs.has(id);
-            return (
-              <div
-                key={id}
-                className={`tab ${id === activeTab ? "active" : ""} ${pinned ? "pinned" : ""}`}
-                onClick={() => setActiveTab(id)}
-              >
-                <span
-                  className="pin"
-                  title={pinned ? "Unpin tab" : "Pin tab"}
-                  onClick={(e) => { e.stopPropagation(); togglePin(id); }}
-                >{pinned ? "●" : "○"}</span>
-                {tabLabel(t)}
-                <span className="close" onClick={(e) => { e.stopPropagation(); closeTab(id); }}>×</span>
-              </div>
-            );
-          })}
-        </div>
+        {showKeys && selectedNpz.length > 0 && (
+          <div className="keys-panel">
+            {selectedNpz.map((ref) => {
+              const rk = metaKey(ref);
+              const meta = npzMetas[rk];
+              return (
+                <div key={rk} className="keys-entry">
+                  <span className="keys-label">{ref.kind}:{ref.name}</span>
+                  {meta ? (
+                    <div className="keys-list">
+                      {meta.keys.map((k) => <span key={k} className="key-chip">{k}</span>)}
+                    </div>
+                  ) : (
+                    <span className="muted">loading…</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-        <div className="tabpanel">
-          {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
+        <div className="tab-area">
+          <div className="tabs">
+            {tabs.map((t) => {
+              const id = tabId(t);
+              const pinned = pinnedTabs.has(id);
+              return (
+                <div
+                  key={id}
+                  className={`tab ${id === activeTab ? "active" : ""} ${pinned ? "pinned" : ""}`}
+                  onClick={() => setActiveTab(id)}
+                >
+                  <span
+                    className="pin"
+                    title={pinned ? "Unpin tab" : "Pin tab"}
+                    onClick={(e) => { e.stopPropagation(); togglePin(id); }}
+                  >{pinned ? "●" : "○"}</span>
+                  {tabLabel(t)}
+                  <span className="close" onClick={(e) => { e.stopPropagation(); closeTab(id); }}>×</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="tabpanel">
+            {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
+          </div>
         </div>
       </main>
     </div>

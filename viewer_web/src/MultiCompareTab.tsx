@@ -10,6 +10,7 @@ import {
   compareAdvanced,
 } from "./api";
 import { LineChart, LineSeries } from "./LineChart";
+import { makeRefLabels } from "./refLabels";
 
 const PAIR_COLORS = [
   "#2563eb", "#16a34a", "#dc2626", "#a855f7", "#f97316",
@@ -100,8 +101,8 @@ function PcaScatter({
               ))}
               {pts.length > 0 && (
                 <text
-                  x={tx(pts[pts.length - 1].x) + 6}
-                  y={ty(pts[pts.length - 1].y) + 4}
+                  x={tx(pts[pts.length - 1].x) - 150}
+                  y={ty(pts[pts.length - 1].y) - 10}
                   fill={color} fontSize={10} fontWeight={600}
                 >
                   {refLabels[ri]}
@@ -286,8 +287,7 @@ export function MultiCompareTab({
   if (refs.length < 2) return <div className="empty">select at least 2 npz from the sidebar</div>;
   if (sources.length === 0) return <div className="empty">select at least one source in the header</div>;
 
-  const refLabel = (r: NpzRef) => `${r.kind}:${r.name}`;
-  const refLabels = refs.map(refLabel);
+  const refLabels = makeRefLabels(refs);
   const pairLabel = (i: number, j: number) => `${refLabels[i]} ↔ ${refLabels[j]}`;
 
   return (

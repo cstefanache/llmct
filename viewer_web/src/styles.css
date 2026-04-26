@@ -21,23 +21,25 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 .header label { display: inline-flex; align-items: center; gap: 4px; }
 .header .title { font-weight: 600; margin-right: auto; }
 
-.tabs { display: flex; background: #fafafa; border-bottom: 1px solid #ddd; overflow-x: auto; }
-.tabs .tab { padding: 6px 12px; cursor: pointer; border-right: 1px solid #eee; white-space: nowrap; font-size: 12px; }
-.tabs .tab.active { background: #fff; border-bottom: 2px solid #2563eb; font-weight: 600; }
+.tab-area { display: flex; flex: 1; overflow: hidden; }
+.tabs { display: flex; flex-direction: column; width: 180px; min-width: 180px; background: #fafafa; border-right: 1px solid #ddd; overflow-y: auto; }
+.tabs .tab { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; display: flex; align-items: center; }
+.tabs .tab.active { background: #fff; border-left: 3px solid #2563eb; font-weight: 600; padding-left: 7px; }
 .tabs .tab:hover:not(.active) { background: #f0f0f0; }
-.tabs .close { color: #aaa; margin-left: 6px; }
+.tabs .close { color: #aaa; margin-left: auto; padding-left: 6px; flex-shrink: 0; }
 .tabs .close:hover { color: #c00; }
-.tabs .pin { color: #ccc; margin-right: 5px; font-size: 9px; line-height: 1; cursor: pointer; }
+.tabs .pin { color: #ccc; margin-right: 5px; font-size: 9px; line-height: 1; cursor: pointer; flex-shrink: 0; }
 .tabs .pin:hover { color: #888; }
 .tabs .tab.pinned .pin { color: #2563eb; }
-.tabs .tab.pinned { border-top: 2px solid #2563eb; }
+.tabs .tab.pinned { border-left: 3px solid #2563eb; padding-left: 7px; }
 
 .tabpanel { flex: 1; overflow: auto; padding: 14px; }
 .section { margin-bottom: 18px; background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; padding: 10px 12px; }
 .section h4 { margin: 0 0 8px 0; font-size: 13px; color: #333; }
 
-.heatmap-img { image-rendering: pixelated; width: 100%; background: #111; display: block; }
-.chart { width: 100%; height: 220px; }
+.heatmap-img { image-rendering: pixelated; width: 100%; max-height: 300px; background: #111; display: block; }
+.chart { width: 100%; height: 550px; }
+.chart .u-legend { font-size: 0.9em; }
 
 .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .controls select, .controls input { padding: 3px 6px; font-size: 12px; }
@@ -55,3 +57,12 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 
 .empty { color: #999; text-align: center; padding: 40px 10px; }
 .err { color: #b00; }
+
+.btn-toggle { padding: 2px 8px; font-size: 11px; border: 1px solid #ccc; border-radius: 3px; background: #fafafa; cursor: pointer; }
+.btn-toggle:hover { background: #f0f6ff; border-color: #2563eb; }
+
+.keys-panel { border-bottom: 1px solid #ddd; background: #fff; padding: 6px 14px; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.keys-entry { display: flex; align-items: flex-start; gap: 8px; }
+.keys-label { font-size: 11px; font-weight: 600; color: #2563eb; white-space: nowrap; min-width: 160px; padding-top: 2px; }
+.keys-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.key-chip { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: #f0f4ff; border: 1px solid #c7d7fd; color: #3730a3; font-family: monospace; }
