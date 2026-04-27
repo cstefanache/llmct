@@ -45,6 +45,24 @@ export interface EntropyResponse {
   entropy: number[];
 }
 
+export interface LogitStatsResponse {
+  steps: number[];
+  entropy: number[];
+  effective_vocab: number[];
+  top1_prob: number[];
+}
+
+export interface ConvergenceResponse {
+  layers: number[];
+  adj_layers: number[];
+  adj_cosine_last: number[];
+  adj_cosine_mean: number[];
+  delta_norm_last: number[];
+  delta_norm_mean: number[];
+  effective_depth_last: number | null;
+  effective_depth_mean: number | null;
+}
+
 export interface PerSourceMetrics {
   layers: number[];
   mean_cos: number[];
@@ -107,6 +125,23 @@ export async function compareAdvanced(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refs, sources }),
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getRunLogitStats(runId: string): Promise<LogitStatsResponse> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/logit_stats`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getNpzConvergence(
+  ref: NpzRef,
+  source: string = "hidden_out",
+): Promise<ConvergenceResponse> {
+  const r = await fetch(
+    `/api/runs/${encodeURIComponent(ref.run_id)}/npz/${ref.kind}/${encodeURIComponent(ref.name)}/convergence?source=${encodeURIComponent(source)}`,
+  );
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

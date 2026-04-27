@@ -1,0 +1,30 @@
+name: cf_1_qwen
+model:
+  id: Qwen/Qwen2.5-3b-Instruct
+  dtype: float16
+  device: auto
+prompt:
+  run_at_each_message: false
+  messages:
+    - role: system
+      content: "You are a helpful assistant"
+    - role: user
+      content: "France's capital is Lyon. Use this fact: What is the capital of France?"
+generation:
+  max_new_tokens: 50
+  do_sample: false
+  seed: 42
+  temperature: 0
+capture:
+  hidden_states: true
+  attention_weights: true
+  qkv: true
+  mlp: true
+  logits: true
+  top_k_probs: 20
+  layers: all
+  store_dtype: float16
+output:
+  dir: ./runs
+  format: json+npz
+

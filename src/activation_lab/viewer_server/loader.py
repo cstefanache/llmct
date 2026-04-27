@@ -16,7 +16,11 @@ class RunRegistry:
         if not self.runs_dir.exists():
             return []
         out: list[dict] = []
-        for p in sorted(self.runs_dir.iterdir(), key=lambda x: x.name):
+        def _ctime(p: Path) -> float:
+            st = p.stat()
+            return getattr(st, "st_birthtime", st.st_ctime)
+
+        for p in sorted(self.runs_dir.iterdir(), key=_ctime):
             if not p.is_dir() or not (p / "run.json").exists():
                 continue
             out.append({"id": p.name, "path": str(p)})

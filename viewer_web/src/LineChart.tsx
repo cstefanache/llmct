@@ -13,6 +13,7 @@ export function LineChart(props: {
   series: LineSeries[];
   title?: string;
   height?: number;
+  xLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const uref = useRef<uPlot | null>(null);
@@ -35,7 +36,7 @@ export function LineChart(props: {
       legend: { live: false },
       scales: { x: { time: false } },
       axes: [
-        { label: "layer" },
+        { label: props.xLabel ?? "layer" },
         {},
       ],
     };

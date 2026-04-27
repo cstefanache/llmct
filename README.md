@@ -47,6 +47,16 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+Run server:
+```
+uv run activation-lab serve runs --port 8765 
+```
+
+Run frontend:
+```
+cd viewer_web && npm install && npm run dev      
+```
+
 Optional extras:
 
 ```bash

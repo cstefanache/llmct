@@ -7,6 +7,7 @@ import { ReferencesTab } from "./ReferencesTab";
 import { NpzAttentionTab } from "./NpzAttentionTab";
 import { PairCompareTab } from "./PairCompareTab";
 import { MultiCompareTab } from "./MultiCompareTab";
+import { PinnedOverlayTab } from "./PinnedOverlayTab";
 import { pairTabLabel } from "./refLabels";
 
 const SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last"] as const;
@@ -41,7 +42,7 @@ export function App() {
   const [selectedNpz, setSelectedNpz] = useState<NpzRef[]>([]);
   const [npzMetas, setNpzMetas] = useState<Record<string, NpzMeta>>({});
   const [showKeys, setShowKeys] = useState(false);
-  const [sources, setSources] = useState<string[]>(["hidden_out"]);
+  const [sources, setSources] = useState<string[]>(["hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last"]);
   const [tabs, setTabs] = useState<ActiveTabKey[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [pinnedTabs, setPinnedTabs] = useState<Set<string>>(new Set());
@@ -149,6 +150,15 @@ export function App() {
 
   const active = useMemo(() => tabs.find((t) => tabId(t) === activeTab) ?? null, [tabs, activeTab]);
 
+  const pinnedNpzRefs = useMemo(
+    () =>
+      tabs
+        .filter((t): t is { kind: "npz"; ref: NpzRef } => t.kind === "npz" && pinnedTabs.has(tabId(t)))
+        .map((t) => t.ref),
+    [tabs, pinnedTabs],
+  );
+ tabs
+        .filter((t): t is { kind: "npz"; ref: NpzRef } => t.kind === "npz" && pinnedTabs.has(tabId(t)))
   return (
     <div className="app">
       <Sidebar
@@ -222,8 +232,24 @@ export function App() {
             })}
           </div>
 
-          <div className="tabpanel">
-            {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
+          <div className="tabpanels-row">
+            <div className="tabpanel-col">
+              {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
+            </div>
+            {tabs
+              .filter((t) => pinnedTabs.has(tabId(t)) && tabId(t) !== activeTab)
+              .map((t) => (
+                <div key={tabId(t)} className="tabpanel-col tabpanel-col--pinned">
+                  <div className="pinned-col-label">{tabLabel(t)}</div>
+                  {renderTab(t)}
+                </div>
+              ))}
+            {pinnedNpzRefs.length >= 1 && (
+              <div className="tabpanel-col tabpanel-col--overlay">
+                <div className="pinned-col-label overlay-col-label">overlay ({pinnedNpzRefs.length})</div>
+                <PinnedOverlayTab refs={pinnedNpzRefs} />
+              </div>
+            )}
           </div>
         </div>
       </main>

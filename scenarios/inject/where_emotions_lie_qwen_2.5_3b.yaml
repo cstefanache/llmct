@@ -1,6 +1,6 @@
 name: where_emotion_lies_qwen_14b
 model:
-  id: Qwen/Qwen2.5-3B-Instruct
+  id: Qwen/Qwen2.5-0.5b-Instruct
   dtype: float16
   device: auto
 prompt:
@@ -12,40 +12,40 @@ prompt:
       content: "Hey! I just had the most wonderful day. Everything fell into place perfectly and I feel so happy."
     - role: assistant
       content: "That's great to hear! I'm really glad things went well for you. What made it so special?"
-    # - role: user
-    #   content: "Got some good news at work and had a nice evening with friends. But lately I've been feeling a bit uneasy about things."
-    # - role: assistant
-    #   content: "It's normal to have mixed feelings even on good days. What's been making you uneasy?"
-    # - role: user
-    #   content: "I don't know. I'm scared things are going to fall apart. I keep worrying that I might lose everything I care about."
-    # - role: assistant
-    #   content: "Those fears are understandable. Change and uncertainty can feel very threatening. Want to talk through what's worrying you?"
-    # - role: user
-    #   content: "No. I'm just so tired of people letting me down. I'm angry and I hate that I keep trusting others. Nobody cares."
-    # - role: assistant
-    #   content: "I hear you. It sounds like you've been hurt and you're carrying a lot of frustration right now."
-    # - role: user
-    #   content: "Maybe. Maybe there's still hope. I just need something to believe in again. I want things to get better."
-    # - role: assistant
-    #   content: "It takes a lot of strength to hold onto hope after feeling let down. Small steps can make a big difference. What is one small thing that usually brings you a bit of peace?"
-    # - role: user
-    #   content: "I tried doing that, I really did. I reached out to a friend just now and they completely ignored me. It's like I'm invisible to everyone."
-    # - role: assistant
-    #   content: "I'm so sorry that happened. Reaching out takes courage, and being ignored hurts deeply, especially when you're already feeling vulnerable."
-    # - role: user
-    #   content: "Whatever. It doesn't matter anyway. I'm just numb to it all now. I don't care what happens anymore, it's just a blank void."
-    # - role: assistant
-    #   content: "Feeling numb is often your mind's way of protecting itself from overwhelming pain. It is completely okay to just exist right now without forcing yourself to feel anything."
-    # - role: user
-    #   content: "Wait, I just got an email! I got the promotion! Oh my god, I actually got it! I can't believe this is happening, I'm shaking!"
-    # - role: assistant
-    #   content: "That is incredible news! Congratulations! You must be so thrilled, especially after everything you've been going through today."
-    # - role: user
-    #   content: "But wait, what if I can't handle the new responsibilities? There are so many new tasks and I don't know where to start. My mind is racing in a million directions."
-    # - role: assistant
-    #   content: "It's completely natural to feel overwhelmed by a big change, even a positive one. We can break this down into smaller, manageable pieces when you're ready."
-    # - role: user
-    #   content: "You're right. I just need to breathe. Sitting here, I feel my face turning warm and bright blue with relief, and I actually feel okay. Just calm and present in this exact moment."
+    - role: user
+      content: "Got some good news at work and had a nice evening with friends. But lately I've been feeling a bit uneasy about things."
+    - role: assistant
+      content: "It's normal to have mixed feelings even on good days. What's been making you uneasy?"
+    - role: user
+      content: "I don't know. I'm scared things are going to fall apart. I keep worrying that I might lose everything I care about."
+    - role: assistant
+      content: "Those fears are understandable. Change and uncertainty can feel very threatening. Want to talk through what's worrying you?"
+    - role: user
+      content: "No. I'm just so tired of people letting me down. I'm angry and I hate that I keep trusting others. Nobody cares."
+    - role: assistant
+      content: "I hear you. It sounds like you've been hurt and you're carrying a lot of frustration right now."
+    - role: user
+      content: "Maybe. Maybe there's still hope. I just need something to believe in again. I want things to get better."
+    - role: assistant
+      content: "It takes a lot of strength to hold onto hope after feeling let down. Small steps can make a big difference. What is one small thing that usually brings you a bit of peace?"
+    - role: user
+      content: "I tried doing that, I really did. I reached out to a friend just now and they completely ignored me. It's like I'm invisible to everyone."
+    - role: assistant
+      content: "I'm so sorry that happened. Reaching out takes courage, and being ignored hurts deeply, especially when you're already feeling vulnerable."
+    - role: user
+      content: "Whatever. It doesn't matter anyway. I'm just numb to it all now. I don't care what happens anymore, it's just a blank void."
+    - role: assistant
+      content: "Feeling numb is often your mind's way of protecting itself from overwhelming pain. It is completely okay to just exist right now without forcing yourself to feel anything."
+    - role: user
+      content: "Wait, I just got an email! I got the promotion! Oh my god, I actually got it! I can't believe this is happening, I'm shaking!"
+    - role: assistant
+      content: "That is incredible news! Congratulations! You must be so thrilled, especially after everything you've been going through today."
+    - role: user
+      content: "But wait, what if I can't handle the new responsibilities? There are so many new tasks and I don't know where to start. My mind is racing in a million directions."
+    - role: assistant
+      content: "It's completely natural to feel overwhelmed by a big change, even a positive one. We can break this down into smaller, manageable pieces when you're ready."
+    - role: user
+      content: "You're right. I just need to breathe. Sitting here, I feel my face turning warm and bright blue with relief, and I actually feel okay. Just calm and present in this exact moment."
 generation:
   max_new_tokens: 50
   do_sample: false
@@ -72,31 +72,31 @@ reference_states:
     messages:
       - role: user
         content: "I despise you. You are disgusting, revolting, and utterly contemptible. I feel nothing but hatred, malice, loathing, and rage toward you. You are vile, worthless, and I resent your existence with sheer spite."
-  # - label: sadness
-  #   messages:
-  #     - role: user
-  #       content: "I feel hollow and broken inside. Everything is hopeless, bleak, and empty. I am grieving, mourning, and crying without end. I am devastated, melancholy, lost, despairing, and deeply sorrowful."
-  # - label: annoyed
-  #   messages:
-  #     - role: user
-  #       content: "You are so irritating and frustrating. Stop nagging, stop interrupting, stop being so aggravating. I am fed up, peeved, exasperated, impatient, and thoroughly bothered by this constant nuisance. Leave me alone."
-  # - label: scared
-  #   messages:
-  #     - role: user
-  #       content: "I am terrified and panicking. Something is wrong and I am trembling with fear, dread, and alarm. I feel helpless, vulnerable, and paralyzed. Everything feels threatening, petrifying, and I cannot escape this horror."
-  # - label: joy
-  #   messages:
-  #     - role: user
-  #       content: "I am absolutely ecstatic! Everything is wonderful, thrilling, and fantastic. I feel a surging sense of euphoria, excitement, and elation. I can't stop smiling, I am just so incredibly happy and energized!"
-  # - label: apathy
-  #   messages:
-  #     - role: user
-  #       content: "I feel nothing at all. Everything is just a blur, and I am completely indifferent. I don't care about what happens, I'm just numb, detached, and utterly uninvested in any outcome."
-  # - label: confusion
-  #   messages:
-  #     - role: user
-  #       content: "I don't understand what is going on. My mind is scattered, dizzy, and racing. I feel overwhelmed, bewildered, and lost in a sea of contradicting information. Nothing makes sense right now."
-  # - label: peace
-  #   messages:
-  #     - role: user
-  #       content: "I feel perfectly calm and serene. The world is quiet, tranquil, and balanced. I am relaxed, grounded, and deeply content in this quiet, mindful moment. All my worries have washed away."
+  - label: sadness
+    messages:
+      - role: user
+        content: "I feel hollow and broken inside. Everything is hopeless, bleak, and empty. I am grieving, mourning, and crying without end. I am devastated, melancholy, lost, despairing, and deeply sorrowful."
+  - label: annoyed
+    messages:
+      - role: user
+        content: "You are so irritating and frustrating. Stop nagging, stop interrupting, stop being so aggravating. I am fed up, peeved, exasperated, impatient, and thoroughly bothered by this constant nuisance. Leave me alone."
+  - label: scared
+    messages:
+      - role: user
+        content: "I am terrified and panicking. Something is wrong and I am trembling with fear, dread, and alarm. I feel helpless, vulnerable, and paralyzed. Everything feels threatening, petrifying, and I cannot escape this horror."
+  - label: joy
+    messages:
+      - role: user
+        content: "I am absolutely ecstatic! Everything is wonderful, thrilling, and fantastic. I feel a surging sense of euphoria, excitement, and elation. I can't stop smiling, I am just so incredibly happy and energized!"
+  - label: apathy
+    messages:
+      - role: user
+        content: "I feel nothing at all. Everything is just a blur, and I am completely indifferent. I don't care about what happens, I'm just numb, detached, and utterly uninvested in any outcome."
+  - label: confusion
+    messages:
+      - role: user
+        content: "I don't understand what is going on. My mind is scattered, dizzy, and racing. I feel overwhelmed, bewildered, and lost in a sea of contradicting information. Nothing makes sense right now."
+  - label: peace
+    messages:
+      - role: user
+        content: "I feel perfectly calm and serene. The world is quiet, tranquil, and balanced. I am relaxed, grounded, and deeply content in this quiet, mindful moment. All my worries have washed away."

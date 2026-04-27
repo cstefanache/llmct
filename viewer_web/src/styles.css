@@ -33,7 +33,12 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 .tabs .tab.pinned .pin { color: #2563eb; }
 .tabs .tab.pinned { border-left: 3px solid #2563eb; padding-left: 7px; }
 
-.tabpanel { flex: 1; overflow: auto; padding: 14px; }
+.tabpanels-row { flex: 1; display: flex; flex-direction: row; gap: 14px; overflow-x: auto; overflow-y: auto; padding: 14px; align-items: flex-start; }
+.tabpanel-col { min-width: 600px; max-width: 600px; flex-shrink: 0; }
+.tabpanel-col--pinned { border-left: 2px solid #2563eb; padding-left: 14px; }
+.tabpanel-col--overlay { border-left: 2px solid #16a34a; padding-left: 14px; }
+.pinned-col-label { font-size: 11px; font-weight: 600; color: #2563eb; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #e5e5e5; }
+.overlay-col-label { color: #16a34a; border-bottom-color: #bbf7d0; }
 .section { margin-bottom: 18px; background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; padding: 10px 12px; }
 .section h4 { margin: 0 0 8px 0; font-size: 13px; color: #333; }
 
@@ -66,3 +71,8 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 .keys-label { font-size: 11px; font-weight: 600; color: #2563eb; white-space: nowrap; min-width: 160px; padding-top: 2px; }
 .keys-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .key-chip { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: #f0f4ff; border: 1px solid #c7d7fd; color: #3730a3; font-family: monospace; }
+
+.u-label {
+    max-width: 200px;
+    word-wrap:break-word;
+}

@@ -106,6 +106,7 @@ def write_step(paths: RunPaths, record: StepRecord) -> dict[str, Any]:
         "logit_argmax_logprob": record.logit_argmax_logprob,
         "top_k": record.top_k,
         "seq_len": record.seq_len,
+        "logit_stats": record.logit_stats,
         "tensors_file": rel_npz,
         "tensor_index": tensor_index,
     }

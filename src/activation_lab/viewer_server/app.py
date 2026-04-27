@@ -213,6 +213,31 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
         vals = compute.attention_entropy(tensors)
         return {"layers": compute.layers_available(tensors), "entropy": vals}
 
+    @app.get("/api/runs/{run_id}/npz/{kind}/{name}/convergence")
+    def get_convergence(
+        run_id: str, kind: Kind, name: str,
+        source: str = Query("hidden_out"),
+    ) -> dict:
+        tensors = load_npz(_resolve(registry, run_id, kind, name))
+        return compute.residual_convergence(tensors, source=source)
+
+    @app.get("/api/runs/{run_id}/logit_stats")
+    def get_logit_stats(run_id: str) -> dict:
+        steps = registry.steps_index(run_id)
+        if not steps:
+            raise HTTPException(404, "no steps found for this run")
+        result: dict = {"steps": [], "entropy": [], "effective_vocab": [], "top1_prob": []}
+        for s in steps:
+            ls = s.get("logit_stats")
+            if ls:
+                result["steps"].append(s["step"])
+                result["entropy"].append(ls.get("entropy"))
+                result["effective_vocab"].append(ls.get("effective_vocab"))
+                result["top1_prob"].append(ls.get("top1_prob"))
+        if not result["steps"]:
+            raise HTTPException(404, "no logit_stats in steps (run predates this feature)")
+        return result
+
     # ----------------------------------------------------------------- compare
 
     @app.post("/api/compare/metrics")

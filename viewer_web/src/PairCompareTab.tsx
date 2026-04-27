@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  NpzRef, NpzMeta, PairMetrics, compareMetrics, comparePairHeatmap, getNpzMeta,
+  NpzRef, NpzMeta, PairMetrics, AdvancedMetricsResponse, ConvergenceResponse,
+  compareMetrics, comparePairHeatmap, compareAdvanced, getNpzMeta, getNpzConvergence,
 } from "./api";
 import { LineChart, LineSeries } from "./LineChart";
+import { PcaScatter } from "./MultiCompareTab";
+
+const CONVERGENCE_SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out"];
 
 const SOURCE_COLORS: Record<string, string> = {
   hidden_in: "#2563eb",
@@ -36,6 +40,12 @@ export function PairCompareTab({
   const [attnUrls, setAttnUrls] = useState<Record<string, string>>({});
   const [qkUrls, setQkUrls] = useState<Record<string, string>>({});
   const [qkvUrls, setQkvUrls] = useState<Record<string, string>>({});
+  const [adv, setAdv] = useState<AdvancedMetricsResponse | null>(null);
+  const [advError, setAdvError] = useState<string | null>(null);
+  const [pcaSource, setPcaSource] = useState<string>(sources[0] ?? "hidden_in");
+  const [convergenceA, setConvergenceA] = useState<ConvergenceResponse | null>(null);
+  const [convergenceB, setConvergenceB] = useState<ConvergenceResponse | null>(null);
+  const [convSource, setConvSource] = useState<string>("hidden_out");
 
   useEffect(() => {
     setError(null);
@@ -109,6 +119,26 @@ export function PairCompareTab({
     return () => { cancelled = true; };
   }, [metaA, metaB, a.run_id, a.kind, a.name, b.run_id, b.kind, b.name]);
 
+  useEffect(() => {
+    setAdv(null);
+    setAdvError(null);
+    if (sources.length === 0) return;
+    compareAdvanced([a, b], sources)
+      .then(setAdv)
+      .catch((e) => setAdvError(String(e)));
+  }, [a.run_id, a.kind, a.name, b.run_id, b.kind, b.name, sources.join(",")]);
+
+  useEffect(() => {
+    if (!sources.includes(pcaSource)) setPcaSource(sources[0] ?? "hidden_in");
+  }, [sources.join(",")]);
+
+  useEffect(() => {
+    setConvergenceA(null);
+    setConvergenceB(null);
+    getNpzConvergence(a, convSource).then(setConvergenceA).catch(console.error);
+    getNpzConvergence(b, convSource).then(setConvergenceB).catch(console.error);
+  }, [a.run_id, a.kind, a.name, b.run_id, b.kind, b.name, convSource]);
+
   if (error) return <div className="err">{error}</div>;
   if (sources.length === 0) return <div className="empty">select at least one source (hidden_in, hidden_out, attn_out, mlp_down_out) in the header</div>;
   if (!metrics) return <div className="empty">computing metrics…</div>;
@@ -125,8 +155,8 @@ export function PairCompareTab({
       })
       .filter((x): x is LineSeries => !!x);
 
-  const aName = `${a.kind}:${a.name}`;
-  const bName = `${b.kind}:${b.name}`;
+  const aName = `${a.run_id} ${a.kind}:${a.name}`;
+  const bName = `${b.run_id} ${b.kind}:${b.name}`;
 
   const xsForMetrics = (metrics[sources[0]]?.layers ?? []) as number[];
 
@@ -180,6 +210,87 @@ export function PairCompareTab({
       </div>
       <div className="section"><h4>Top-1% activation overlap (Jaccard) per layer</h4>
         <LineChart xs={xsForMetrics} series={mkSeries("mean_overlap")} />
+      </div>
+
+      <div className="section" style={{ borderTop: "2px solid #16a34a", marginTop: 24 }}>
+        <h4 style={{ color: "#16a34a" }}>Residual Stream Convergence</h4>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          Does the residual stream stop changing early?
+          Adjacent-layer cosine similarity near 1.0 means the stream has settled.
+          Effective depth = first layer where cosine ≥ 0.99 and never drops below again.
+        </div>
+        <div className="controls">
+          <label>
+            Source:
+            <select value={convSource} onChange={(e) => setConvSource(e.target.value)} style={{ marginLeft: 4 }}>
+              {CONVERGENCE_SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          {convergenceA && (
+            <span className="muted">
+              A eff. depth: last=<b>{convergenceA.effective_depth_last ?? "—"}</b>{" "}
+              mean=<b>{convergenceA.effective_depth_mean ?? "—"}</b>
+            </span>
+          )}
+          {convergenceB && (
+            <span className="muted">
+              B eff. depth: last=<b>{convergenceB.effective_depth_last ?? "—"}</b>{" "}
+              mean=<b>{convergenceB.effective_depth_mean ?? "—"}</b>
+            </span>
+          )}
+        </div>
+        {(!convergenceA || !convergenceB) && <div className="muted">computing…</div>}
+        {convergenceA && convergenceB && (() => {
+          const nA = convergenceA.adj_layers.length;
+          const nB = convergenceB.adj_layers.length;
+          const n = Math.min(nA, nB);
+          const xs = convergenceA.adj_layers.slice(0, n);
+          return (
+            <>
+              <h5 style={{ marginTop: 8, marginBottom: 4 }}>Adjacent-layer cosine similarity (1.0 = no change)</h5>
+              <LineChart
+                xs={xs}
+                series={[
+                  { label: "A last token", data: convergenceA.adj_cosine_last.slice(0, n), stroke: "#2563eb" },
+                  { label: "A mean", data: convergenceA.adj_cosine_mean.slice(0, n), stroke: "#93c5fd" },
+                  { label: "B last token", data: convergenceB.adj_cosine_last.slice(0, n), stroke: "#dc2626" },
+                  { label: "B mean", data: convergenceB.adj_cosine_mean.slice(0, n), stroke: "#fca5a5" },
+                ]}
+                height={220}
+              />
+              <h5 style={{ marginTop: 16, marginBottom: 4 }}>Relative update norm ‖Δh‖/‖h‖ (0 = no change)</h5>
+              <LineChart
+                xs={xs}
+                series={[
+                  { label: "A last token", data: convergenceA.delta_norm_last.slice(0, n), stroke: "#2563eb" },
+                  { label: "A mean", data: convergenceA.delta_norm_mean.slice(0, n), stroke: "#93c5fd" },
+                  { label: "B last token", data: convergenceB.delta_norm_last.slice(0, n), stroke: "#dc2626" },
+                  { label: "B mean", data: convergenceB.delta_norm_mean.slice(0, n), stroke: "#fca5a5" },
+                ]}
+                height={220}
+              />
+            </>
+          );
+        })()}
+      </div>
+
+      <div className="section" style={{ borderTop: "2px solid #2563eb", marginTop: 24 }}>
+        <h4 style={{ color: "#2563eb" }}>PCA Layer Trajectories</h4>
+        <div className="controls">
+          <label>
+            Source:
+            <select value={pcaSource} onChange={(e) => setPcaSource(e.target.value)} style={{ marginLeft: 4 }}>
+              {sources.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+        </div>
+        {advError && <div className="err">{advError}</div>}
+        {!adv && !advError && <div className="muted">computing PCA…</div>}
+        {adv && (
+          adv.pca[pcaSource]
+            ? <PcaScatter data={adv.pca[pcaSource]} refLabels={[aName, bName]} />
+            : <div className="muted">no PCA data for {pcaSource}</div>
+        )}
       </div>
 
       <div className="section">

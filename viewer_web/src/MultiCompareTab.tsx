@@ -29,7 +29,7 @@ const mn = (a: number[]) => (a.length ? Math.min(...a) : 0);
 
 // ─── PCA scatter (SVG) ────────────────────────────────────────────────────────
 
-function PcaScatter({
+export function PcaScatter({
   data, refLabels,
 }: {
   data: PcaSourceResult;
@@ -99,20 +99,25 @@ function PcaScatter({
                   <title>layer {data.layers[p.li]}</title>
                 </circle>
               ))}
-              {pts.length > 0 && (
-                <text
-                  x={tx(pts[pts.length - 1].x) - 150}
-                  y={ty(pts[pts.length - 1].y) - 10}
-                  fill={color} fontSize={10} fontWeight={600}
-                >
-                  {refLabels[ri]}
-                </text>
-              )}
             </g>
           );
         })}
       </svg>
-      <div className="muted" style={{ textAlign: "center", fontSize: 11, marginTop: 2 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", marginTop: 8, paddingLeft: PAD }}>
+        {refLabels.map((label, ri) => {
+          const color = PAIR_COLORS[ri % PAIR_COLORS.length];
+          return (
+            <div key={ri} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
+              <svg width={24} height={12} style={{ flexShrink: 0 }}>
+                <line x1={0} y1={6} x2={16} y2={6} stroke={color} strokeWidth={1.5} strokeOpacity={0.5} />
+                <circle cx={16} cy={6} r={3.5} fill={color} />
+              </svg>
+              <span style={{ color, fontWeight: 600 }}>{label}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="muted" style={{ textAlign: "center", fontSize: 11, marginTop: 6 }}>
         Each point = one layer's mean activation. Opacity: light = early layer → dark = late.
       </div>
     </div>

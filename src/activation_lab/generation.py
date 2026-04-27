@@ -25,6 +25,7 @@ class StepRecord:
     top_k: list[dict[str, Any]]
     seq_len: int
     tensors: dict[str, np.ndarray] = field(default_factory=dict)
+    logit_stats: dict[str, float] = field(default_factory=dict)
 
 
 def _build_input_ids(
@@ -73,10 +74,19 @@ def _pick_next_token(
 
 def _top_k_payload(
     logits_last: torch.Tensor, tokenizer, k: int
-) -> tuple[list[dict[str, Any]], int, float]:
+) -> tuple[list[dict[str, Any]], int, float, dict[str, float]]:
     logprobs = torch.log_softmax(logits_last.float(), dim=-1)
+    probs = logprobs.exp()
     argmax_id = int(logprobs.argmax(dim=-1).item())
     argmax_lp = float(logprobs[..., argmax_id].item())
+
+    # Distribution-level stats computed on the full vocabulary (in memory, no storage cost).
+    entropy = float(-(probs * logprobs).sum(dim=-1).item())  # Shannon entropy, nats
+    logit_stats: dict[str, float] = {
+        "entropy": entropy,
+        "effective_vocab": float(torch.exp(torch.tensor(entropy)).item()),  # exp(H)
+        "top1_prob": float(probs.max(dim=-1).values.item()),
+    }
 
     payload: list[dict[str, Any]] = []
     if k > 0:
@@ -94,7 +104,7 @@ def _top_k_payload(
                     "logprob": float(lp),
                 }
             )
-    return payload, argmax_id, argmax_lp
+    return payload, argmax_id, argmax_lp, logit_stats
 
 
 def run_generation(
@@ -143,7 +153,7 @@ def run_generation(
         past_kv = out.past_key_values
 
         logits_last = logits[:, -1, :]
-        top_k, argmax_id, argmax_lp = _top_k_payload(
+        top_k, argmax_id, argmax_lp, logit_stats = _top_k_payload(
             logits_last, tokenizer, cap_cfg.top_k_probs
         )
         next_id = _pick_next_token(logits_last, gen_cfg, generator)
@@ -163,6 +173,7 @@ def run_generation(
             top_k=top_k,
             seq_len=seq_len,
             tensors=tensors,
+            logit_stats=logit_stats,
         )
 
         token_history.append(next_id)
@@ -191,9 +202,15 @@ def capture_reference_prefill(
     ``(⟨q, k⟩ / √d_head) · v``. This is length-independent, so snapshots with
     different prompt lengths are directly comparable.
 
-    ``attn_weights`` is dropped entirely (T_kv-indexed ⇒ prompt-length-specific).
-    Step files keep attn_weights (fixed-length within a run).
+    When ``cap_cfg.attention_weights`` is True, per-layer softmax attention weights
+    (``layer_NN/attn_weights``) are also retained, enabling the viewer to display
+    attention heatmaps and compute entropy per layer for references and snapshots.
+
+    When ``cap_cfg.qkv`` is True, per-layer ``layer_NN/q`` and ``layer_NN/k`` are
+    retained so the viewer can render raw q·k/√d_k score matrices. ``v`` is always
+    dropped after ``qkv_last`` is computed.
     """
+    model.eval()
     prompt_cfg = PromptConfig(messages=messages, run_at_each_message=False)
     input_ids = _build_input_ids(tokenizer, prompt_cfg, device)
 
@@ -234,9 +251,14 @@ def capture_reference_prefill(
         )
 
     for key in list(tensors.keys()):
-        if key.endswith("/attn_weights") or (
-            key.startswith("layer_") and key.endswith(("/q", "/k", "/v"))
-        ):
+        is_attn = key.endswith("/attn_weights")
+        is_q_or_k = key.startswith("layer_") and key.endswith(("/q", "/k"))
+        is_v = key.startswith("layer_") and key.endswith("/v")
+        if is_v:
+            del tensors[key]
+        elif is_attn and not cap_cfg.attention_weights:
+            del tensors[key]
+        elif is_q_or_k and not cap_cfg.qkv:
             del tensors[key]
 
     return tensors, input_ids[0].tolist()

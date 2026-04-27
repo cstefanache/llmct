@@ -414,6 +414,79 @@ def pca_analysis(
     return result
 
 
+# ---------------------------------------------------------------- residual convergence
+
+def residual_convergence(
+    tensors: dict[str, np.ndarray],
+    source: str = "hidden_out",
+) -> dict:
+    """Adjacent-layer cosine similarity and relative update norm of the residual stream.
+
+    Returns both last-token and mean-over-sequence variants so callers can compare
+    whether the stream settles uniformly or only at the final token position.
+
+    Effective depth = first layer index where cosine similarity stays ≥ 0.99 for all
+    subsequent layers (i.e. the stream has effectively stopped changing).
+    """
+    by_layer = _per_layer_vectors(tensors, source)
+    layers = sorted(by_layer.keys())
+
+    if len(layers) < 2:
+        return {
+            "layers": [int(l) for l in layers],
+            "adj_layers": [],
+            "adj_cosine_last": [],
+            "adj_cosine_mean": [],
+            "delta_norm_last": [],
+            "delta_norm_mean": [],
+            "effective_depth_last": None,
+            "effective_depth_mean": None,
+        }
+
+    adj_layers: list[int] = []
+    adj_cosine_last: list[float] = []
+    adj_cosine_mean: list[float] = []
+    delta_norm_last: list[float] = []
+    delta_norm_mean: list[float] = []
+
+    for i in range(len(layers) - 1):
+        l0, l1 = layers[i], layers[i + 1]
+        h0 = np.asarray(by_layer[l0], dtype=np.float32)
+        h1 = np.asarray(by_layer[l1], dtype=np.float32)
+        T = min(h0.shape[0], h1.shape[0])
+        h0, h1 = h0[:T], h1[:T]
+
+        cos_vec = _cosine_per_token(h0, h1)  # (T,)
+        adj_cosine_mean.append(float(cos_vec.mean()))
+        adj_cosine_last.append(float(cos_vec[-1]))
+
+        delta = h1 - h0
+        rel_norms = np.linalg.norm(delta, axis=-1) / (np.linalg.norm(h0, axis=-1) + 1e-12)
+        delta_norm_mean.append(float(rel_norms.mean()))
+        delta_norm_last.append(float(rel_norms[-1]))
+
+        adj_layers.append(int(l0))
+
+    THRESHOLD = 0.99
+
+    def _effective_depth(cos_list: list[float]) -> int | None:
+        for i in range(len(cos_list)):
+            if all(c >= THRESHOLD for c in cos_list[i:]):
+                return adj_layers[i]
+        return None
+
+    return {
+        "layers": [int(l) for l in layers],
+        "adj_layers": adj_layers,
+        "adj_cosine_last": adj_cosine_last,
+        "adj_cosine_mean": adj_cosine_mean,
+        "delta_norm_last": delta_norm_last,
+        "delta_norm_mean": delta_norm_mean,
+        "effective_depth_last": _effective_depth(adj_cosine_last),
+        "effective_depth_mean": _effective_depth(adj_cosine_mean),
+    }
+
+
 # ---------------------------------------------------------------- pair heatmap derivatives
 
 def diff_matrices(a: np.ndarray, b: np.ndarray) -> dict[str, np.ndarray]:
