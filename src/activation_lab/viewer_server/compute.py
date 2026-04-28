@@ -414,6 +414,182 @@ def pca_analysis(
     return result
 
 
+# ---------------------------------------------------------------- multi-snapshot group analysis
+
+
+def _layer_mean_vector(arr: np.ndarray) -> np.ndarray:
+    """Reduce a per-source layer tensor (T, D) or (D,) to a (D,) mean vector."""
+    arr = np.asarray(arr, dtype=np.float64)
+    if arr.ndim == 1:
+        return arr
+    return arr.mean(axis=0)
+
+
+def _cos(u: np.ndarray, v: np.ndarray) -> float:
+    nu = float(np.linalg.norm(u)) + 1e-12
+    nv = float(np.linalg.norm(v)) + 1e-12
+    return float(np.dot(u, v) / (nu * nv))
+
+
+def _topk_indices(v: np.ndarray, k: int) -> set[int]:
+    if k >= v.size:
+        return set(range(v.size))
+    return set(np.argpartition(np.abs(v), -k)[-k:].tolist())
+
+
+def _average_linkage(dist: np.ndarray) -> list[list[float]]:
+    """Lance-Williams average-linkage clustering. dist: symmetric (N, N).
+
+    Returns SciPy-style linkage rows: [cluster_i, cluster_j, distance, member_count].
+    Cluster ids 0..N-1 are leaves; new clusters get ids N, N+1, ...
+    """
+    n = dist.shape[0]
+    if n < 2:
+        return []
+    D = dist.astype(np.float64).copy()
+    np.fill_diagonal(D, np.inf)
+    sizes = [1] * n
+    ids = list(range(n))
+    rows: list[list[float]] = []
+    next_id = n
+    active = list(range(n))
+    while len(active) > 1:
+        # Find min pair among active rows/cols
+        sub = D[np.ix_(active, active)]
+        flat = np.argmin(sub)
+        ai, aj = divmod(flat, len(active))
+        if ai == aj:
+            break
+        if ai > aj:
+            ai, aj = aj, ai
+        i, j = active[ai], active[aj]
+        d_ij = float(D[i, j])
+        ni, nj = sizes[i], sizes[j]
+        rows.append([float(ids[i]), float(ids[j]), d_ij, float(ni + nj)])
+        # Merge j into i with weighted average
+        for m in active:
+            if m == i or m == j:
+                continue
+            new_d = (ni * D[i, m] + nj * D[j, m]) / (ni + nj)
+            D[i, m] = new_d
+            D[m, i] = new_d
+        sizes[i] = ni + nj
+        ids[i] = next_id
+        next_id += 1
+        # Drop j
+        D[j, :] = np.inf
+        D[:, j] = np.inf
+        active.remove(j)
+    return rows
+
+
+def group_analysis(
+    tensors_list: list[dict[str, np.ndarray]],
+    sources: list[str],
+    topk_pct: float = 0.01,
+) -> dict:
+    """Per-source N-way comparison metrics for identifying matching snapshot patterns.
+
+    Returns, per source:
+      layers          : [int]
+      cos_to_centroid : [[float per snapshot] per layer]  — alignment of each snapshot with the group mean
+      divergence      : [float per layer]                   — 1 − mean pairwise cosine of layer means
+      pairwise_cos    : [[float] (N,N)]                     — layer-averaged pairwise cosine of layer means
+      topk_jaccard    : [[float] (N,N)]                     — layer-averaged Jaccard of top-k channel indices
+      linkage         : [[i, j, dist, count]]               — average-link clustering on (1 − pairwise_cos)
+    """
+    n = len(tensors_list)
+    result: dict = {}
+    for src in sources:
+        by_ref = [_per_layer_vectors(t, src) for t in tensors_list]
+        layers = sorted(set().union(*[set(d.keys()) for d in by_ref])) if by_ref else []
+
+        # Per-layer per-snapshot mean vectors. None where layer missing for that snapshot.
+        means_per_layer: list[list[np.ndarray | None]] = []
+        for layer in layers:
+            row = []
+            for rd in by_ref:
+                row.append(_layer_mean_vector(rd[layer]) if layer in rd else None)
+            means_per_layer.append(row)
+
+        # cos to centroid + divergence per layer
+        cos_centroid: list[list[float | None]] = []
+        divergence: list[float | None] = []
+        for row in means_per_layer:
+            present = [v for v in row if v is not None]
+            if len(present) < 2:
+                cos_centroid.append([None] * n)
+                divergence.append(None)
+                continue
+            centroid = np.mean(np.stack(present), axis=0)
+            cs = [_cos(v, centroid) if v is not None else None for v in row]
+            cos_centroid.append(cs)
+            pair_cs: list[float] = []
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if row[i] is not None and row[j] is not None:
+                        pair_cs.append(_cos(row[i], row[j]))
+            divergence.append(1.0 - float(np.mean(pair_cs)) if pair_cs else None)
+
+        # Layer-averaged pairwise cosine and top-k Jaccard matrices
+        cos_sum = np.zeros((n, n), dtype=np.float64)
+        cos_cnt = np.zeros((n, n), dtype=np.int64)
+        jac_sum = np.zeros((n, n), dtype=np.float64)
+        jac_cnt = np.zeros((n, n), dtype=np.int64)
+        for row in means_per_layer:
+            # determine top-k size from any present vector
+            ref_v = next((v for v in row if v is not None), None)
+            if ref_v is None:
+                continue
+            D = ref_v.size
+            k = max(1, int(round(D * topk_pct)))
+            topk_sets = [None if v is None else _topk_indices(v, k) for v in row]
+            for i in range(n):
+                for j in range(n):
+                    if row[i] is None or row[j] is None:
+                        continue
+                    cos_sum[i, j] += _cos(row[i], row[j]) if i != j else 1.0
+                    cos_cnt[i, j] += 1
+                    si, sj = topk_sets[i], topk_sets[j]
+                    if si is not None and sj is not None:
+                        union = len(si | sj)
+                        jac_sum[i, j] += (len(si & sj) / union) if union else 0.0
+                        jac_cnt[i, j] += 1
+
+        def _avg_mat(s: np.ndarray, c: np.ndarray) -> list[list[float | None]]:
+            out = [[None] * n for _ in range(n)]
+            for i in range(n):
+                for j in range(n):
+                    if c[i, j] > 0:
+                        out[i][j] = float(s[i, j] / c[i, j])
+            return out
+
+        cos_mat = _avg_mat(cos_sum, cos_cnt)
+        jac_mat = _avg_mat(jac_sum, jac_cnt)
+
+        # Distance matrix for clustering: 1 - cos, fall back to 1.0 where missing.
+        dist = np.ones((n, n), dtype=np.float64)
+        for i in range(n):
+            for j in range(n):
+                v = cos_mat[i][j]
+                if v is not None:
+                    dist[i, j] = max(0.0, 1.0 - v)
+        np.fill_diagonal(dist, 0.0)
+        # symmetrize defensively
+        dist = 0.5 * (dist + dist.T)
+        linkage = _average_linkage(dist)
+
+        result[src] = {
+            "layers": [int(la) for la in layers],
+            "cos_to_centroid": cos_centroid,
+            "divergence": divergence,
+            "pairwise_cos": cos_mat,
+            "topk_jaccard": jac_mat,
+            "linkage": linkage,
+        }
+    return result
+
+
 # ---------------------------------------------------------------- residual convergence
 
 def residual_convergence(

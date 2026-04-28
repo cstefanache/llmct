@@ -117,6 +117,29 @@ export interface AdvancedMetricsResponse {
   pca: Record<string, PcaSourceResult>;
 }
 
+export interface GroupSourceResult {
+  layers: number[];
+  cos_to_centroid: (number | null)[][];   // [layer][snapshot]
+  divergence: (number | null)[];          // per layer
+  pairwise_cos: (number | null)[][];      // (N, N) layer-averaged
+  topk_jaccard: (number | null)[][];      // (N, N) layer-averaged
+  linkage: [number, number, number, number][];  // SciPy-style linkage rows
+}
+
+export type GroupAnalysisResponse = Record<string, GroupSourceResult>;
+
+export async function compareGroup(
+  refs: NpzRef[], sources: string[],
+): Promise<GroupAnalysisResponse> {
+  const r = await fetch("/api/compare/group", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refs, sources }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function compareAdvanced(
   refs: NpzRef[], sources: string[],
 ): Promise<AdvancedMetricsResponse> {
@@ -215,4 +238,81 @@ export async function comparePairHeatmap(
   if (!r.ok) throw new Error(await r.text());
   const blob = await r.blob();
   return URL.createObjectURL(blob);
+}
+
+// ---- configurator
+
+export interface ScenarioFileSummary { path: string; name: string; mtime: number; }
+
+export async function listScenarios(): Promise<ScenarioFileSummary[]> {
+  const r = await fetch("/api/scenarios");
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getScenarioFile(path: string): Promise<string> {
+  const r = await fetch(`/api/scenarios/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(await r.text());
+  const data = await r.json();
+  return data.yaml as string;
+}
+
+export async function getRunScenarioYaml(runId: string): Promise<string> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/scenario.yaml`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.text();
+}
+
+export interface ValidationResult { ok: boolean; errors: { loc: string[]; msg: string }[]; }
+
+export async function validateScenario(yamlText: string): Promise<ValidationResult> {
+  const r = await fetch("/api/scenarios/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ yaml: yamlText }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function saveScenario(path: string, yamlText: string, overwrite: boolean): Promise<void> {
+  const r = await fetch("/api/scenarios/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, yaml: yamlText, overwrite }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export interface LocalModel { model_id: string; }
+
+export async function listLocalModels(): Promise<LocalModel[]> {
+  const r = await fetch("/api/models/local");
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export async function launchScenario(path: string): Promise<{ job_id: string }> {
+  const r = await fetch("/api/runs/launch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export interface JobStatus {
+  status: "queued" | "running" | "done" | "failed";
+  returncode: number | null;
+  started_at: string;
+  finished_at: string;
+  log_tail: string[];
+  run_id: string | null;
+}
+
+export async function getJob(jobId: string): Promise<JobStatus> {
+  const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }

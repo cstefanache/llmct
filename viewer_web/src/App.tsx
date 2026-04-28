@@ -8,6 +8,7 @@ import { NpzAttentionTab } from "./NpzAttentionTab";
 import { PairCompareTab } from "./PairCompareTab";
 import { MultiCompareTab } from "./MultiCompareTab";
 import { PinnedOverlayTab } from "./PinnedOverlayTab";
+import { ConfiguratorTab } from "./ConfiguratorTab";
 import { pairTabLabel } from "./refLabels";
 
 const SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last"] as const;
@@ -19,13 +20,15 @@ type ActiveTabKey =
   | { kind: "group"; runId: string; groupType: "conversation_snapshots" | "references" | "tensors" }
   | { kind: "npz"; ref: NpzRef }
   | { kind: "pair"; a: NpzRef; b: NpzRef }
-  | { kind: "multi"; refs: NpzRef[] };
+  | { kind: "multi"; refs: NpzRef[] }
+  | { kind: "configurator" };
 
 function tabId(t: ActiveTabKey): string {
   if (t.kind === "run") return `run:${t.runId}`;
   if (t.kind === "group") return `group:${t.runId}:${t.groupType}`;
   if (t.kind === "npz") return `npz:${t.ref.run_id}:${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return MULTI_TAB_ID;
+  if (t.kind === "configurator") return "configurator";
   return `pair:${t.a.run_id}:${t.a.kind}:${t.a.name}::${t.b.run_id}:${t.b.kind}:${t.b.name}`;
 }
 
@@ -34,6 +37,7 @@ function tabLabel(t: ActiveTabKey): string {
   if (t.kind === "group") return t.groupType;
   if (t.kind === "npz") return `${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return `compare all (${t.refs.length})`;
+  if (t.kind === "configurator") return "new scenario";
   return pairTabLabel(t.a, t.b);
 }
 
@@ -145,6 +149,7 @@ export function App() {
     }
     if (t.kind === "npz") return <NpzAttentionTab npz={t.ref} />;
     if (t.kind === "multi") return <MultiCompareTab refs={t.refs} sources={sources} />;
+    if (t.kind === "configurator") return <ConfiguratorTab onOpenRunTab={(runId) => addTab({ kind: "run", runId })} />;
     return <PairCompareTab a={t.a} b={t.b} sources={sources} />;
   };
 
@@ -186,6 +191,9 @@ export function App() {
               {showKeys ? "hide keys" : "show keys"}
             </button>
           )}
+          <button className="btn-toggle" style={{ marginLeft: "auto" }} onClick={() => addTab({ kind: "configurator" })}>
+            + new scenario
+          </button>
         </div>
 
         {showKeys && selectedNpz.length > 0 && (
@@ -233,7 +241,7 @@ export function App() {
           </div>
 
           <div className="tabpanels-row">
-            <div className="tabpanel-col">
+            <div className={`tabpanel-col${active?.kind === "configurator" ? " tabpanel-col--wide" : ""}`}>
               {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
             </div>
             {tabs

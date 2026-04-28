@@ -76,3 +76,23 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
     max-width: 200px;
     word-wrap:break-word;
 }
+
+/* ---- configurator ---- */
+
+.tabpanel-col--wide { min-width: 960px; max-width: 1400px; }
+
+.scenario-form { display: flex; flex-direction: column; gap: 0; }
+.form-row { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.form-row label { font-size: 11px; color: #666; font-weight: 600; }
+
+.message-row { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px; }
+
+.ref-state-block { border-left: 3px solid #e5e5e5; padding-left: 10px; margin-bottom: 10px; }
+
+.yaml-pane { display: flex; flex-direction: column; }
+.yaml-pane-label { font-size: 11px; font-weight: 600; color: #666; margin-bottom: 4px; }
+.yaml-textarea { font-family: monospace; font-size: 12px; width: 100%; min-height: 600px; resize: vertical; padding: 8px; border: 1px solid #e5e5e5; border-radius: 4px; background: #fafeff; line-height: 1.5; }
+.yaml-textarea:focus { outline: 1px solid #2563eb; border-color: #2563eb; }
+.yaml-error { margin-top: 4px; font-size: 11px; }
+
+.log-tail { font-family: monospace; font-size: 11px; max-height: 240px; overflow: auto; background: #111; color: #eee; padding: 8px; border-radius: 4px; margin-top: 6px; white-space: pre-wrap; }

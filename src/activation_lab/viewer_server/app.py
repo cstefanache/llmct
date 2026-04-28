@@ -4,6 +4,7 @@ Routes:
   GET  /api/runs                                   → list runs
   GET  /api/runs/{run_id}                          → run.json
   GET  /api/runs/{run_id}/tree                     → sidebar tree
+  GET  /api/runs/{run_id}/scenario.yaml            → reconstruct scenario YAML from run.json
   GET  /api/runs/{run_id}/npz/{kind}/{name}/meta   → keys+shapes for a single npz
   GET  /api/runs/{run_id}/npz/{kind}/{name}/attention.png?layer=all|N   → attn-softmax
   GET  /api/runs/{run_id}/npz/{kind}/{name}/qk.png?layer=all|N          → raw q·k/√dk
@@ -11,6 +12,13 @@ Routes:
   GET  /api/runs/{run_id}/npz/{kind}/{name}/entropy                     → per-layer entropy
   POST /api/compare/metrics                        → per-layer cos/MAE/STD/Jaccard
   POST /api/compare/heatmap.png                    → pair heatmap (side/diff/sq/hadamard/ratio)
+  GET  /api/scenarios                              → list scenario YAML files
+  GET  /api/scenarios/file?path=<rel>             → raw YAML text
+  POST /api/scenarios/validate                     → validate YAML against Scenario model
+  POST /api/scenarios/save                         → write YAML to scenarios/
+  GET  /api/models/local                           → locally cached HF models
+  POST /api/runs/launch                            → launch a scenario as a subprocess
+  GET  /api/jobs/{job_id}                          → job status + log tail
 """
 from __future__ import annotations
 
@@ -18,11 +26,14 @@ import os
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from fastapi import Body, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from . import compute
+from ..scenario import Scenario
+from . import compute, jobs
+from . import ollama as ollama_mod
 from .loader import RunRegistry, load_npz, npz_inventory, resolve_npz
 from .render import matrix_to_png
 
@@ -34,6 +45,20 @@ class NpzRef(BaseModel):
     run_id: str
     kind: Kind
     name: str
+
+
+class ValidateRequest(BaseModel):
+    yaml: str
+
+
+class SaveRequest(BaseModel):
+    path: str
+    yaml: str
+    overwrite: bool = False
+
+
+class LaunchRequest(BaseModel):
+    path: str
 
 
 class MetricsRequest(BaseModel):
@@ -56,6 +81,7 @@ class HeatmapPairRequest(BaseModel):
 
 def create_app(runs_dir: Path | None = None) -> FastAPI:
     runs_dir = runs_dir or Path(os.environ.get("ACTIVATION_LAB_RUNS_DIR", "runs")).resolve()
+    scenarios_dir = runs_dir.parent / "scenarios"
     registry = RunRegistry(runs_dir)
 
     app = FastAPI(title="Activation Lab Viewer", version="0.1")
@@ -258,6 +284,13 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
             "pca": compute.pca_analysis(loaded, req.sources),
         }
 
+    @app.post("/api/compare/group")
+    def compare_group(req: AdvancedMetricsRequest = Body(...)) -> dict:
+        if len(req.refs) < 2:
+            raise HTTPException(400, "need at least 2 refs")
+        loaded = [load_npz(_resolve(registry, r.run_id, r.kind, r.name)) for r in req.refs]
+        return compute.group_analysis(loaded, req.sources)
+
     @app.post("/api/compare/heatmap.png")
     def compare_heatmap(req: HeatmapPairRequest = Body(...)) -> Response:
         if req.source == "attention":
@@ -317,6 +350,119 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
                 cmap = "RdBu_r"
         png = matrix_to_png(out, cmap=cmap, signed=signed)
         return Response(content=png, media_type="image/png")
+
+    # ----------------------------------------------------------------- scenarios
+
+    def _safe_scenario_path(rel: str) -> Path:
+        """Resolve a relative path under scenarios_dir, rejecting traversals."""
+        try:
+            p = (scenarios_dir / rel).resolve()
+        except Exception as exc:
+            raise HTTPException(400, f"invalid path: {rel}") from exc
+        if not p.is_relative_to(scenarios_dir.resolve()):
+            raise HTTPException(400, "path traversal not allowed")
+        return p
+
+    @app.get("/api/scenarios")
+    def list_scenarios() -> list[dict]:
+        if not scenarios_dir.exists():
+            return []
+        result = []
+        for p in sorted(scenarios_dir.rglob("*.yaml")):
+            rel = str(p.relative_to(scenarios_dir))
+            result.append({"path": rel, "name": p.stem, "mtime": p.stat().st_mtime})
+        return result
+
+    @app.get("/api/scenarios/file")
+    def get_scenario_file(path: str = Query(...)) -> dict:
+        p = _safe_scenario_path(path)
+        if not p.exists():
+            raise HTTPException(404, f"scenario not found: {path}")
+        return {"yaml": p.read_text()}
+
+    @app.get("/api/runs/{run_id}/scenario.yaml")
+    def get_run_scenario_yaml(run_id: str) -> Response:
+        try:
+            data = registry.run_json(run_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        scenario_dict = data.get("scenario", {})
+        text = yaml.safe_dump(scenario_dict, sort_keys=False, allow_unicode=True)
+        return Response(content=text, media_type="text/yaml")
+
+    @app.post("/api/scenarios/validate")
+    def validate_scenario(req: ValidateRequest = Body(...)) -> dict:
+        try:
+            raw = yaml.safe_load(req.yaml)
+            Scenario.model_validate(raw)
+            return {"ok": True, "errors": []}
+        except yaml.YAMLError as e:
+            return {"ok": False, "errors": [{"loc": [], "msg": f"YAML parse error: {e}"}]}
+        except ValidationError as e:
+            errs = [{"loc": list(err["loc"]), "msg": err["msg"]} for err in e.errors()]
+            return {"ok": False, "errors": errs}
+
+    @app.post("/api/scenarios/save")
+    def save_scenario(req: SaveRequest = Body(...)) -> dict:
+        p = _safe_scenario_path(req.path)
+        if p.exists() and not req.overwrite:
+            raise HTTPException(409, f"file already exists: {req.path}")
+        # Validate before writing
+        try:
+            raw = yaml.safe_load(req.yaml)
+            Scenario.model_validate(raw)
+        except yaml.YAMLError as e:
+            raise HTTPException(400, f"YAML parse error: {e}")
+        except ValidationError as e:
+            raise HTTPException(422, str(e))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(req.yaml)
+        return {"saved": req.path}
+
+    # ----------------------------------------------------------------- local models
+
+    @app.get("/api/models/local")
+    def get_local_models() -> list[dict]:
+        return ollama_mod.list_local_models()
+
+    # ----------------------------------------------------------------- launch / jobs
+
+    @app.post("/api/runs/launch")
+    def launch_run(req: LaunchRequest = Body(...)) -> dict:
+        p = _safe_scenario_path(req.path)
+        if not p.exists():
+            raise HTTPException(404, f"scenario file not found: {req.path}")
+        try:
+            raw = yaml.safe_load(p.read_text())
+            scenario = Scenario.model_validate(raw)
+        except Exception as e:
+            raise HTTPException(400, f"invalid scenario: {e}")
+        info = jobs.launch_scenario(p, scenario.name)
+        return {"job_id": info.job_id}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str) -> dict:
+        info = jobs.get(job_id)
+        if info is None:
+            raise HTTPException(404, "job not found")
+        run_id = None
+        if runs_dir.exists():
+            candidates = [
+                p for p in runs_dir.iterdir()
+                if p.is_dir()
+                and p.name.startswith(info.expected_run_prefix)
+                and (p / "run.json").exists()
+            ]
+            if candidates:
+                run_id = max(candidates, key=lambda p: p.stat().st_mtime).name
+        return {
+            "status": info.status,
+            "returncode": info.returncode,
+            "started_at": info.started_at,
+            "finished_at": info.finished_at,
+            "log_tail": info.log_tail(),
+            "run_id": run_id,
+        }
 
     return app
 
