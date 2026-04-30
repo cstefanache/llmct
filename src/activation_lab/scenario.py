@@ -65,11 +65,18 @@ class OutputConfig(BaseModel):
 class Scenario(BaseModel):
     name: str
     model: ModelConfig
-    prompt: PromptConfig
+    prompt: list[PromptConfig]
     generation: GenerationConfig = GenerationConfig()
     capture: CaptureConfig = CaptureConfig()
     output: OutputConfig = OutputConfig()
     reference_states: list[ReferenceState] = []
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def _normalize_prompt(cls, v):
+        if isinstance(v, dict):
+            return [v]
+        return v
 
     @field_validator("name")
     @classmethod

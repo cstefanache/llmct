@@ -25,10 +25,33 @@ class RunPaths:
     steps_json: Path
 
 
-def make_run_dir(scenario: Scenario, label: str = "") -> RunPaths:
+def make_scenario_dir(scenario: Scenario) -> Path:
+    """Create the parent directory grouping all prompt-runs of one scenario invocation.
+
+    Layout: ``<output.dir>/<scenario.name>_<ts>/``. Per-prompt run directories
+    (``prompt_0/``, ``prompt_1/``, ...) live under this directory.
+    """
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    run_name = f"{scenario.name}_{label}_{ts}" if label else f"{scenario.name}_{ts}"
-    root = Path(scenario.output.dir) / run_name
+    p = Path(scenario.output.dir) / f"{scenario.name}_{ts}"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def write_scenario_manifest(scenario_dir: Path, scenario: Scenario) -> None:
+    """Write the shared scenario manifest (config common to every prompt run)."""
+    (scenario_dir / "scenario.json").write_text(
+        json.dumps(scenario.model_dump(), indent=2, default=str)
+    )
+
+
+def make_run_dir(parent_dir: Path, label: str) -> RunPaths:
+    """Create one prompt-run directory under ``parent_dir``.
+
+    ``label`` is the leaf folder name (e.g. ``prompt_0`` or ``prompt_0_msg2of3``).
+    """
+    if not label:
+        raise ValueError("label is required (e.g. 'prompt_0')")
+    root = parent_dir / label
     tensors_dir = root / "tensors"
     tensors_dir.mkdir(parents=True, exist_ok=True)
     return RunPaths(

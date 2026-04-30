@@ -10,14 +10,16 @@ from rich.table import Table
 from .generation import capture_reference_prefill, run_generation
 from .heatmap import HeatmapRequest, generate as generate_heatmaps
 from .models import load_model
-from .scenario import ModelConfig, Scenario, load_scenario
+from .scenario import Message, ModelConfig, Scenario, load_scenario
 from .serialize import (
     make_run_dir,
+    make_scenario_dir,
     write_conversation_snapshot,
     write_conversation_snapshot_index,
     write_reference_index,
     write_reference_state,
     write_run_manifest,
+    write_scenario_manifest,
     write_step,
     write_steps_json,
 )
@@ -34,12 +36,26 @@ def _tensor_index(tensors: dict) -> dict:
 
 
 def _capture_conversation_snapshots(
-    scenario: Scenario, run_dir, model, tokenizer, arch, device
+    scenario: Scenario,
+    run_dir,
+    model,
+    tokenizer,
+    arch,
+    device,
+    generated_text: str = "",
 ) -> None:
-    """Capture a full prefill snapshot for each message prefix in the conversation."""
-    messages = scenario.prompt.messages
+    """Capture a full prefill snapshot for each message prefix in the conversation.
+
+    If ``generated_text`` is non-empty, appends one final snapshot that includes
+    the model's generated response as a new ``assistant`` turn — letting you
+    inspect the full conversation state once the prediction is complete.
+    """
+    messages = list(scenario.prompt[0].messages)
     if not messages:
         return
+    if generated_text:
+        messages.append(Message(role="assistant", content=generated_text))
+
     console.print(f"  [bold]Capturing {len(messages)} conversation snapshot(s)...[/bold]")
     snap_info = []
     for i, msg in enumerate(messages):
@@ -48,6 +64,7 @@ def _capture_conversation_snapshots(
             model, tokenizer, arch, prefix, scenario.capture, device
         )
         write_conversation_snapshot(run_dir, i, msg.role, tensors)
+        is_generated = bool(generated_text) and i == len(messages) - 1
         snap_info.append({
             "index": i,
             "role": msg.role,
@@ -57,39 +74,48 @@ def _capture_conversation_snapshots(
             "seq_len": len(input_ids),
             "tensors_file": f"snapshot_{i:02d}_{msg.role}.npz",
             "tensor_index": _tensor_index(tensors),
+            "generated": is_generated,
         })
     write_conversation_snapshot_index(run_dir, snap_info)
     console.print(f"  [green]{len(messages)} snapshot(s) saved[/green]")
 
 
 def _capture_reference_states(
-    scenario: Scenario, run_dir, model, tokenizer, arch, device
+    scenario: Scenario, out_dir: Path, model, tokenizer, arch, device
 ) -> None:
+    """Write reference-state NPZs to ``out_dir/references/`` (one set per scenario, shared across prompts)."""
     if not scenario.reference_states:
         return
-    console.print(f"  [bold]Capturing {len(scenario.reference_states)} reference state(s)...[/bold]")
+    console.print(f"[bold]Capturing {len(scenario.reference_states)} reference state(s)...[/bold]")
     labels: list[str] = []
     for ref in scenario.reference_states:
-        console.print(f"    [dim]reference '{ref.label}'[/dim]")
+        console.print(f"  [dim]reference '{ref.label}'[/dim]")
         tensors, _input_ids = capture_reference_prefill(
             model, tokenizer, arch, ref.messages, scenario.capture, device
         )
-        write_reference_state(run_dir, ref.label, tensors)
+        write_reference_state(out_dir, ref.label, tensors)
         labels.append(ref.label)
-    write_reference_index(run_dir, labels)
-    console.print(f"  [green]{len(labels)} reference(s) saved[/green]")
+    write_reference_index(out_dir, labels)
+    console.print(f"[green]{len(labels)} reference(s) saved[/green]")
 
 
-def _execute_run(scenario: Scenario, model, tokenizer, arch, device, label: str = "") -> None:
+def _execute_run(
+    scenario: Scenario,
+    model,
+    tokenizer,
+    arch,
+    device,
+    parent_dir: Path,
+    label: str,
+) -> None:
     from .generation import _build_input_ids  # local import to avoid cycle in type checkers
 
-    if label:
-        console.print(f"\n[bold]--- {label} ({len(scenario.prompt.messages)} message(s)) ---[/bold]")
+    console.print(f"\n[bold]--- {label} ({len(scenario.prompt[0].messages)} message(s)) ---[/bold]")
 
-    paths = make_run_dir(scenario, label=label)
+    paths = make_run_dir(parent_dir, label)
     console.print(f"[bold]Run dir:[/bold] {paths.root}")
 
-    prompt_ids = _build_input_ids(tokenizer, scenario.prompt, device)[0].tolist()
+    prompt_ids = _build_input_ids(tokenizer, scenario.prompt[0], device)[0].tolist()
     write_run_manifest(paths, scenario, arch, tokenizer, device, prompt_ids)
 
     entries = []
@@ -98,7 +124,7 @@ def _execute_run(scenario: Scenario, model, tokenizer, arch, device, label: str 
         model=model,
         tokenizer=tokenizer,
         arch=arch,
-        prompt_cfg=scenario.prompt,
+        prompt_cfg=scenario.prompt[0],
         gen_cfg=scenario.generation,
         cap_cfg=scenario.capture,
         device=device,
@@ -112,11 +138,13 @@ def _execute_run(scenario: Scenario, model, tokenizer, arch, device, label: str 
             f"→ {rec.generated_token!r}"
         )
 
+    generated_text = "".join(generated_tokens)
     write_steps_json(paths, entries)
     console.print(f"[green]Done.[/green] {len(entries)} step(s) written.")
-    console.print(f"[bold]Generated:[/bold] {''.join(generated_tokens)!r}")
-    _capture_conversation_snapshots(scenario, paths.root, model, tokenizer, arch, device)
-    _capture_reference_states(scenario, paths.root, model, tokenizer, arch, device)
+    console.print(f"[bold]Generated:[/bold] {generated_text!r}")
+    _capture_conversation_snapshots(
+        scenario, paths.root, model, tokenizer, arch, device, generated_text
+    )
 
 
 @app.command()
@@ -153,17 +181,27 @@ def run(
                 f"device={device}, dtype={next(model.parameters()).dtype}"
             )
 
-        if scenario.prompt.run_at_each_message:
-            n = len(scenario.prompt.messages)
-            console.print(f"[bold]run_at_each_message:[/bold] {n} run(s)")
-            for i in range(1, n + 1):
-                sub_prompt = scenario.prompt.model_copy(
-                    update={"messages": scenario.prompt.messages[:i], "run_at_each_message": False}
-                )
-                sub_scenario = scenario.model_copy(update={"prompt": sub_prompt})
-                _execute_run(sub_scenario, model, tokenizer, arch, device, label=f"msg{i}of{n}")
-        else:
-            _execute_run(scenario, model, tokenizer, arch, device)
+        scenario_dir = make_scenario_dir(scenario)
+        write_scenario_manifest(scenario_dir, scenario)
+        console.print(f"[bold]Scenario dir:[/bold] {scenario_dir}")
+
+        _capture_reference_states(scenario, scenario_dir, model, tokenizer, arch, device)
+
+        for p_idx, prompt_cfg in enumerate(scenario.prompt):
+            base_label = f"prompt_{p_idx}"
+            if prompt_cfg.run_at_each_message:
+                n = len(prompt_cfg.messages)
+                console.print(f"[bold]run_at_each_message:[/bold] {n} run(s)")
+                for i in range(1, n + 1):
+                    sub_prompt = prompt_cfg.model_copy(
+                        update={"messages": prompt_cfg.messages[:i], "run_at_each_message": False}
+                    )
+                    sub_scenario = scenario.model_copy(update={"prompt": [sub_prompt]})
+                    label = f"{base_label}_msg{i}of{n}"
+                    _execute_run(sub_scenario, model, tokenizer, arch, device, scenario_dir, label)
+            else:
+                sub_scenario = scenario.model_copy(update={"prompt": [prompt_cfg]})
+                _execute_run(sub_scenario, model, tokenizer, arch, device, scenario_dir, base_label)
 
 
 @app.command()

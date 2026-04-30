@@ -22,12 +22,14 @@ Routes:
 """
 from __future__ import annotations
 
+import base64
+import json as json_mod
 import os
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from fastapi import Body, FastAPI, HTTPException, Query, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Response  # Body kept for other routes
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 
@@ -77,6 +79,16 @@ class HeatmapPairRequest(BaseModel):
     source: Literal["attention", "qk", "qkv"]
     layer: str = "all"
     variant: Literal["a", "b", "abs_diff", "sq_err", "hadamard", "ratio"]
+
+
+class ReportRequest(BaseModel):
+    kind: Literal["run", "npz", "pair", "multi"]
+    run_id: str | None = None
+    ref: NpzRef | None = None
+    a: NpzRef | None = None
+    b: NpzRef | None = None
+    refs: list[NpzRef] | None = None
+    sources: list[str] = []
 
 
 def create_app(runs_dir: Path | None = None) -> FastAPI:
@@ -463,6 +475,39 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
             "log_tail": info.log_tail(),
             "run_id": run_id,
         }
+
+    # ----------------------------------------------------------------- report
+    # Parameters are base64-encoded JSON in the query string so the browser can
+    # open the report as a plain GET navigation (new tab, bookmarkable URL).
+
+    @app.get("/api/report/view")
+    def view_report(params: str = Query(...)) -> Response:
+        from . import report as report_mod
+        try:
+            req_data = json_mod.loads(base64.b64decode(params.encode()).decode())
+        except Exception as exc:
+            raise HTTPException(400, f"invalid params encoding: {exc}") from exc
+
+        kind = req_data.get("kind")
+        sources = req_data.get("sources", [])
+        try:
+            if kind == "run":
+                html = report_mod.generate_run_report(registry, req_data["run_id"])
+            elif kind == "npz":
+                html = report_mod.generate_npz_report(registry, req_data["ref"], sources)
+            elif kind == "pair":
+                html = report_mod.generate_pair_report(
+                    registry, req_data["a"], req_data["b"], sources,
+                )
+            elif kind == "multi":
+                html = report_mod.generate_multi_report(registry, req_data["refs"], sources)
+            else:
+                raise HTTPException(400, f"unknown kind: {kind}")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, f"report generation failed: {exc}") from exc
+        return Response(content=html, media_type="text/html")
 
     return app
 

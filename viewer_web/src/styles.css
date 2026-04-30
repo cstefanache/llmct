@@ -10,6 +10,8 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 .sidebar .node.selected { background: #dbeafe; }
 .sidebar .node .chev { width: 14px; text-align: center; color: #888; }
 .sidebar .node.leaf .chev { color: transparent; }
+.sidebar .node.scenario { font-weight: 600; color: #444; background: #f8fafc; }
+.sidebar .node.scenario:hover { background: #eef4fa; }
 .sidebar .indent-1 { padding-left: 18px; }
 .sidebar .indent-2 { padding-left: 36px; }
 .sidebar .indent-3 { padding-left: 54px; }

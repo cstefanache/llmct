@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   NpzRef, NpzMeta, PairMetrics, AdvancedMetricsResponse, ConvergenceResponse,
   compareMetrics, comparePairHeatmap, compareAdvanced, getNpzMeta, getNpzConvergence,
+  openReport,
 } from "./api";
 import { LineChart, LineSeries } from "./LineChart";
 import { PcaScatter } from "./MultiCompareTab";
@@ -37,6 +38,7 @@ export function PairCompareTab({
   const [metaB, setMetaB] = useState<NpzMeta | null>(null);
   const [layer, setLayer] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
+  const handleDownload = () => openReport({ kind: "pair", a, b, sources });
   const [attnUrls, setAttnUrls] = useState<Record<string, string>>({});
   const [qkUrls, setQkUrls] = useState<Record<string, string>>({});
   const [qkvUrls, setQkvUrls] = useState<Record<string, string>>({});
@@ -163,6 +165,7 @@ export function PairCompareTab({
   return (
     <div>
       <div className="controls">
+        <button className="btn-toggle" onClick={handleDownload}>↓ open report</button>
         <span className="muted"><b>A</b>: {aName}</span>
         <span className="muted"><b>B</b>: {bName}</span>
       </div>

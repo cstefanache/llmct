@@ -1,0 +1,9 @@
+{
+  "profile": "openai",
+  "env": {
+    "OPENAI_BASE_URL": "http://localhost:11434/v1",
+    "OPENAI_MODEL": "gemma4:26b",
+    "OPENAI_API_FORMAT": "chat_completions"
+  },
+  "createdAt": "2026-04-30T12:00:02.385Z"
+}

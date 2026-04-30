@@ -11,6 +11,7 @@ import {
   compareGroup,
   getEntropy,
   getNpzConvergence,
+  openReport,
 } from "./api";
 import { LineChart, LineSeries } from "./LineChart";
 import { makeRefLabels } from "./refLabels";
@@ -407,6 +408,7 @@ export function MultiCompareTab({
   const [entropyData, setEntropyData] = useState<(EntropyResponse | null)[]>([]);
   const [convData, setConvData] = useState<(ConvergenceResponse | null)[]>([]);
   const [convSource, setConvSource] = useState<string>("hidden_out");
+  const handleDownload = () => openReport({ kind: "multi", refs, sources });
 
   const refsKey = useMemo(
     () => refs.map((r) => `${r.run_id}|${r.kind}|${r.name}`).join("::"),
@@ -503,6 +505,8 @@ export function MultiCompareTab({
   return (
     <div>
       <div className="controls">
+        <button className="btn-toggle" onClick={handleDownload}>↓ open report
+        </button>
         <span className="muted"><b>Refs ({refs.length}):</b> {refLabels.join(", ")}</span>
       </div>
 

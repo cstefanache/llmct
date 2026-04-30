@@ -51,18 +51,22 @@ export interface OutputConfig {
 export interface ScenarioModel {
   name: string;
   model: ModelConfig;
-  prompt: PromptConfig;
+  prompt: PromptConfig[];
   generation: GenerationConfig;
   capture: CaptureConfig;
   output: OutputConfig;
   reference_states: ReferenceState[];
 }
 
+export function defaultPrompt(): PromptConfig {
+  return { messages: [{ role: "user", content: "" }], run_at_each_message: false };
+}
+
 export function defaultScenario(): ScenarioModel {
   return {
     name: "",
     model: { id: "", dtype: "float16", device: "auto", trust_remote_code: false, gguf_file: null },
-    prompt: { messages: [{ role: "user", content: "" }], run_at_each_message: false },
+    prompt: [defaultPrompt()],
     generation: { max_new_tokens: 50, do_sample: false, temperature: 1.0, top_k: null, top_p: null, seed: 42 },
     capture: { hidden_states: true, attention_weights: true, qkv: true, mlp: true, logits: true, top_k_probs: 20, layers: "all", store_dtype: "float16" },
     output: { dir: "./runs", format: "json+npz" },
@@ -84,15 +88,31 @@ export function scenarioToYaml(s: ScenarioModel): string {
 export function yamlToScenario(text: string): ScenarioModel {
   const raw = yaml.load(text) as Record<string, unknown>;
   const d = defaultScenario();
+  // Accept legacy single-dict prompt or new list form, mirroring the Pydantic validator.
+  const rawPrompt = raw.prompt;
+  const promptList: PromptConfig[] = (() => {
+    if (Array.isArray(rawPrompt)) {
+      return rawPrompt.map((p) => ({
+        ...defaultPrompt(),
+        ...(p as object ?? {}),
+        messages: ((p as Record<string, unknown>)?.messages as Message[]) ?? [],
+      }));
+    }
+    if (rawPrompt && typeof rawPrompt === "object") {
+      const p = rawPrompt as Record<string, unknown>;
+      return [{
+        ...defaultPrompt(),
+        ...p,
+        messages: (p.messages as Message[]) ?? defaultPrompt().messages,
+      }];
+    }
+    return d.prompt;
+  })();
   // Merge raw over defaults so every optional field is guaranteed to be present.
   const merged: ScenarioModel = {
     name: (raw.name as string) ?? d.name,
     model: { ...d.model, ...(raw.model as object ?? {}) },
-    prompt: {
-      ...d.prompt,
-      ...(raw.prompt as object ?? {}),
-      messages: ((raw.prompt as Record<string, unknown>)?.messages as ScenarioModel["prompt"]["messages"]) ?? d.prompt.messages,
-    },
+    prompt: promptList,
     generation: { ...d.generation, ...(raw.generation as object ?? {}) },
     capture: {
       ...d.capture,

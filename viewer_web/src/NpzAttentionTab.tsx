@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   NpzRef, NpzMeta, EntropyResponse, ConvergenceResponse,
   attentionPngUrl, qkPngUrl, qkvPngUrl, getEntropy, getNpzMeta, getNpzConvergence,
+  openReport,
 } from "./api";
 import { LineChart } from "./LineChart";
 
@@ -14,6 +15,7 @@ export function NpzAttentionTab({ npz }: { npz: NpzRef }) {
   const [convergence, setConvergence] = useState<ConvergenceResponse | null>(null);
   const [convSource, setConvSource] = useState<string>("hidden_out");
   const [error, setError] = useState<string | null>(null);
+  const handleDownload = () => openReport({ kind: "npz", ref: npz, sources: [] });
 
   useEffect(() => {
     setError(null);
@@ -44,6 +46,7 @@ export function NpzAttentionTab({ npz }: { npz: NpzRef }) {
   return (
     <div>
       <div className="controls">
+        <button className="btn-toggle" onClick={handleDownload}>↓ open report</button>
         <label>
           Layer:
           <select value={layer} onChange={(e) => setLayer(e.target.value)} style={{ marginLeft: 4 }}>

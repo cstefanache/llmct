@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listLocalModels, LocalModel } from "../api";
-import { Message, ScenarioModel } from "./scenarioModel";
+import { defaultPrompt, Message, PromptConfig, ScenarioModel } from "./scenarioModel";
 
 interface Props {
   scenario: ScenarioModel;
@@ -21,9 +21,6 @@ export function ScenarioForm({ scenario, onChange, disabled }: Props) {
   const setModel = (patch: Partial<ScenarioModel["model"]>) =>
     set("model", { ...scenario.model, ...patch });
 
-  const setPrompt = (patch: Partial<ScenarioModel["prompt"]>) =>
-    set("prompt", { ...scenario.prompt, ...patch });
-
   const setGeneration = (patch: Partial<ScenarioModel["generation"]>) =>
     set("generation", { ...scenario.generation, ...patch });
 
@@ -33,16 +30,28 @@ export function ScenarioForm({ scenario, onChange, disabled }: Props) {
   const setOutput = (patch: Partial<ScenarioModel["output"]>) =>
     set("output", { ...scenario.output, ...patch });
 
-  const updateMessage = (i: number, patch: Partial<Message>) => {
-    const msgs = scenario.prompt.messages.map((m, idx) => idx === i ? { ...m, ...patch } : m);
-    setPrompt({ messages: msgs });
+  const updatePrompt = (pi: number, patch: Partial<PromptConfig>) => {
+    const next = scenario.prompt.map((p, idx) => idx === pi ? { ...p, ...patch } : p);
+    set("prompt", next);
   };
 
-  const addMessage = () =>
-    setPrompt({ messages: [...scenario.prompt.messages, { role: "user", content: "" }] });
+  const addPrompt = () => set("prompt", [...scenario.prompt, defaultPrompt()]);
 
-  const removeMessage = (i: number) =>
-    setPrompt({ messages: scenario.prompt.messages.filter((_, idx) => idx !== i) });
+  const removePrompt = (pi: number) => {
+    if (scenario.prompt.length <= 1) return;
+    set("prompt", scenario.prompt.filter((_, idx) => idx !== pi));
+  };
+
+  const updateMessage = (pi: number, mi: number, patch: Partial<Message>) => {
+    const msgs = scenario.prompt[pi].messages.map((m, idx) => idx === mi ? { ...m, ...patch } : m);
+    updatePrompt(pi, { messages: msgs });
+  };
+
+  const addMessage = (pi: number) =>
+    updatePrompt(pi, { messages: [...scenario.prompt[pi].messages, { role: "user", content: "" }] });
+
+  const removeMessage = (pi: number, mi: number) =>
+    updatePrompt(pi, { messages: scenario.prompt[pi].messages.filter((_, idx) => idx !== mi) });
 
   const addRefState = () =>
     set("reference_states", [
@@ -157,34 +166,53 @@ export function ScenarioForm({ scenario, onChange, disabled }: Props) {
         </div>
       </div>
 
-      {/* Prompt */}
+      {/* Prompts */}
       <div className="section">
-        <h4>Prompt</h4>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-          <input type="checkbox" checked={scenario.prompt.run_at_each_message} onChange={(e) => setPrompt({ run_at_each_message: e.target.checked })} />
-          {" "}run at each message
-        </label>
-        {scenario.prompt.messages.map((msg, i) => (
-          <div key={i} className="message-row">
-            <select
-              value={msg.role}
-              onChange={(e) => updateMessage(i, { role: e.target.value as Message["role"] })}
-              style={{ width: 90, flexShrink: 0 }}
-            >
-              <option>system</option>
-              <option>user</option>
-              <option>assistant</option>
-            </select>
-            <textarea
-              value={msg.content}
-              onChange={(e) => updateMessage(i, { content: e.target.value })}
-              rows={2}
-              style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}
-            />
-            <button className="btn-toggle" onClick={() => removeMessage(i)} title="Remove message" style={{ flexShrink: 0 }}>×</button>
+        <h4>Prompts <span className="muted">(each runs independently with its own npz output)</span></h4>
+        {scenario.prompt.map((prompt, pi) => (
+          <div key={pi} className="ref-state-block">
+            <div className="controls" style={{ justifyContent: "space-between" }}>
+              <strong>Prompt {pi + 1}</strong>
+              <div className="controls">
+                <label>
+                  <input type="checkbox" checked={prompt.run_at_each_message}
+                    onChange={(e) => updatePrompt(pi, { run_at_each_message: e.target.checked })} />
+                  {" "}run at each message
+                </label>
+                <button
+                  className="btn-toggle"
+                  onClick={() => removePrompt(pi)}
+                  disabled={scenario.prompt.length <= 1}
+                  title={scenario.prompt.length <= 1 ? "At least one prompt is required" : "Remove prompt"}
+                >
+                  remove
+                </button>
+              </div>
+            </div>
+            {prompt.messages.map((msg, mi) => (
+              <div key={mi} className="message-row" style={{ paddingLeft: 12 }}>
+                <select
+                  value={msg.role}
+                  onChange={(e) => updateMessage(pi, mi, { role: e.target.value as Message["role"] })}
+                  style={{ width: 90, flexShrink: 0 }}
+                >
+                  <option>system</option>
+                  <option>user</option>
+                  <option>assistant</option>
+                </select>
+                <textarea
+                  value={msg.content}
+                  onChange={(e) => updateMessage(pi, mi, { content: e.target.value })}
+                  rows={2}
+                  style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}
+                />
+                <button className="btn-toggle" onClick={() => removeMessage(pi, mi)} title="Remove message" style={{ flexShrink: 0 }}>×</button>
+              </div>
+            ))}
+            <button className="btn-toggle" onClick={() => addMessage(pi)} style={{ marginLeft: 12, marginTop: 4 }}>+ message</button>
           </div>
         ))}
-        <button className="btn-toggle" onClick={addMessage} style={{ marginTop: 4 }}>+ message</button>
+        <button className="btn-toggle" onClick={addPrompt} style={{ marginTop: 6 }}>+ prompt</button>
       </div>
 
       {/* Generation */}

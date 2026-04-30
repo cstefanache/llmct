@@ -6,7 +6,14 @@ export interface NpzRef {
   name: string;
 }
 
-export interface RunSummary { id: string; path: string; }
+export interface RunSummary {
+  id: string;
+  path: string;
+  /** Parent scenario directory name when this run is nested under a multi-prompt scenario; null for legacy flat runs. */
+  group?: string | null;
+  /** Leaf folder name (e.g. "prompt_0"). For legacy flat runs, equals id. */
+  label?: string;
+}
 
 export interface TreeNode {
   kind: Kind;
@@ -315,4 +322,23 @@ export async function getJob(jobId: string): Promise<JobStatus> {
   const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+// ---- report download
+
+export type ReportKind = "run" | "npz" | "pair" | "multi";
+
+export interface ReportRequest {
+  kind: ReportKind;
+  run_id?: string;
+  ref?: NpzRef;
+  a?: NpzRef;
+  b?: NpzRef;
+  refs?: NpzRef[];
+  sources?: string[];
+}
+
+export function openReport(req: ReportRequest): void {
+  const params = btoa(JSON.stringify(req));
+  window.open(`/api/report/view?params=${encodeURIComponent(params)}`, "_blank");
 }

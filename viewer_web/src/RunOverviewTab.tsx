@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
-import { getRun, getRunLogitStats, LogitStatsResponse } from "./api";
+import { useEffect, useState } from "react"; // useState still used for run/logitStats/error
+import { getRun, getRunLogitStats, LogitStatsResponse, openReport } from "./api";
 import { LineChart } from "./LineChart";
 
 export function RunOverviewTab({ runId }: { runId: string }) {
   const [run, setRun] = useState<any>(null);
   const [logitStats, setLogitStats] = useState<LogitStatsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const handleDownload = () => openReport({ kind: "run", run_id: runId });
 
   useEffect(() => {
     setRun(null);
@@ -20,6 +21,9 @@ export function RunOverviewTab({ runId }: { runId: string }) {
 
   return (
     <div>
+      <div className="controls">
+        <button className="btn-toggle" onClick={handleDownload}>↓ open report</button>
+      </div>
       <div className="section">
         <h4>Scenario</h4>
         <div><b>name:</b> {run.scenario?.name}</div>
