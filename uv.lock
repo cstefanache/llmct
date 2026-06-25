@@ -61,6 +61,11 @@ notebook = [
     { name = "jupyter" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=0.30" },
@@ -82,6 +87,9 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 provides-extras = ["dev", "notebook"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "altair"
