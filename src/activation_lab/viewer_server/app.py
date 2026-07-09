@@ -17,6 +17,7 @@ Routes:
   POST /api/scenarios/validate                     → validate YAML against Scenario model
   POST /api/scenarios/save                         → write YAML to scenarios/
   GET  /api/models/local                           → locally cached HF models
+  GET  /api/models/validators                      → frontier-model chat models per provider with key
   POST /api/runs/launch                            → launch a scenario as a subprocess
   GET  /api/jobs/{job_id}                          → job status + log tail
 """
@@ -40,7 +41,7 @@ from .loader import RunRegistry, load_npz, npz_inventory, resolve_npz
 from .render import matrix_to_png
 
 
-Kind = Literal["snapshot", "reference", "step"]
+Kind = Literal["snapshot", "validation_snapshot", "reference", "step"]
 
 
 class NpzRef(BaseModel):
@@ -117,6 +118,17 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
 
+    @app.get("/api/runs/{run_id}/llm_validate")
+    def get_llm_validate(run_id: str) -> dict:
+        try:
+            base = registry.run_dir(run_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        path = base / "llm_validate.json"
+        if not path.exists():
+            raise HTTPException(404, "llm_validate.json not found for this run")
+        return json_mod.loads(path.read_text())
+
     @app.get("/api/runs/{run_id}/tree")
     def get_tree(run_id: str) -> dict:
         try:
@@ -124,8 +136,7 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
 
-        tree: dict = {"run_id": run_id, "children": []}
-        _ = base  # base dir not needed now that the tree no longer probes NPZs
+        tree: dict = {"run_id": run_id, "children": [], "has_llm_validate": (base / "llm_validate.json").exists()}
 
         # conversation snapshots — has_attention is unknown until the user clicks
         # the node and /meta is fetched. Kept as null to avoid opening every NPZ.
@@ -144,6 +155,22 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
                     "has_attention": None,
                 })
             tree["children"].append({"type": "conversation_snapshots", "children": children})
+
+        # validation snapshots — captured after each frontier-model evaluator
+        val_snaps = registry.validation_snapshots_index(run_id)
+        if val_snaps:
+            children = []
+            for s in val_snaps:
+                label = s.get("label", f"validator_{s['index']}")
+                fname = f"snapshot_{s['index']:02d}_{label}.npz"
+                name = fname.removesuffix(".npz")
+                children.append({
+                    "kind": "validation_snapshot",
+                    "name": name,
+                    "label": f"{s['index']:02d} {label} ({s.get('model', '')})",
+                    "has_attention": None,
+                })
+            tree["children"].append({"type": "validation_snapshots", "children": children})
 
         # references — same policy as snapshots
         refs = registry.references_index(run_id)
@@ -437,6 +464,20 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
     def get_local_models() -> list[dict]:
         return ollama_mod.list_local_models()
 
+    # -------------------------------------------------------- frontier validators
+
+    @app.get("/api/models/validators")
+    def get_validator_models() -> dict:
+        """Return chat models available per provider whose API key is set in .env.
+
+        Per-provider value is either a list of model ids or {"error": "..."} when
+        the provider's listing call failed. Providers with no configured key are
+        omitted from the response.
+        """
+        from .. import validate as validate_mod
+        result = validate_mod.list_provider_models()
+        return {"providers": result}
+
     # ----------------------------------------------------------------- launch / jobs
 
     @app.post("/api/runs/launch")
@@ -498,9 +539,12 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
             elif kind == "pair":
                 html = report_mod.generate_pair_report(
                     registry, req_data["a"], req_data["b"], sources,
+                    a_label=req_data.get("a_label"), b_label=req_data.get("b_label"),
                 )
             elif kind == "multi":
-                html = report_mod.generate_multi_report(registry, req_data["refs"], sources)
+                html = report_mod.generate_multi_report(
+                    registry, req_data["refs"], sources, labels=req_data.get("labels"),
+                )
             else:
                 raise HTTPException(400, f"unknown kind: {kind}")
         except HTTPException:

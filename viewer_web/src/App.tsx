@@ -9,6 +9,7 @@ import { PairCompareTab } from "./PairCompareTab";
 import { MultiCompareTab } from "./MultiCompareTab";
 import { PinnedOverlayTab } from "./PinnedOverlayTab";
 import { ConfiguratorTab } from "./ConfiguratorTab";
+import { LlmValidateTab } from "./LlmValidateTab";
 import { pairTabLabel } from "./refLabels";
 
 const SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last"] as const;
@@ -17,11 +18,12 @@ const MULTI_TAB_ID = "multi";
 
 type ActiveTabKey =
   | { kind: "run"; runId: string }
-  | { kind: "group"; runId: string; groupType: "conversation_snapshots" | "references" | "tensors" }
+  | { kind: "group"; runId: string; groupType: "conversation_snapshots" | "validation_snapshots" | "references" | "tensors" }
   | { kind: "npz"; ref: NpzRef }
   | { kind: "pair"; a: NpzRef; b: NpzRef }
   | { kind: "multi"; refs: NpzRef[] }
-  | { kind: "configurator" };
+  | { kind: "configurator" }
+  | { kind: "llm_validate"; runId: string };
 
 function tabId(t: ActiveTabKey): string {
   if (t.kind === "run") return `run:${t.runId}`;
@@ -29,6 +31,7 @@ function tabId(t: ActiveTabKey): string {
   if (t.kind === "npz") return `npz:${t.ref.run_id}:${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return MULTI_TAB_ID;
   if (t.kind === "configurator") return "configurator";
+  if (t.kind === "llm_validate") return `llm_validate:${t.runId}`;
   return `pair:${t.a.run_id}:${t.a.kind}:${t.a.name}::${t.b.run_id}:${t.b.kind}:${t.b.name}`;
 }
 
@@ -38,6 +41,7 @@ function tabLabel(t: ActiveTabKey): string {
   if (t.kind === "npz") return `${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return `compare all (${t.refs.length})`;
   if (t.kind === "configurator") return "new scenario";
+  if (t.kind === "llm_validate") return "validation";
   return pairTabLabel(t.a, t.b);
 }
 
@@ -88,6 +92,7 @@ export function App() {
     if (s.kind === "run") openSelection({ kind: "run", runId: s.runId });
     else if (s.kind === "group" && s.groupType) openSelection({ kind: "group", runId: s.runId, groupType: s.groupType });
     else if (s.kind === "npz" && s.npz) openSelection({ kind: "npz", ref: { run_id: s.runId, kind: s.npz.kind, name: s.npz.name } });
+    else if (s.kind === "llm_validate") openSelection({ kind: "llm_validate", runId: s.runId });
   };
 
   const onToggleNpz = (ref: NpzRef, node: TreeNode) => {
@@ -145,11 +150,12 @@ export function App() {
     if (t.kind === "group") {
       if (t.groupType === "conversation_snapshots") return <ConversationSnapshotsTab runId={t.runId} />;
       if (t.groupType === "references") return <ReferencesTab runId={t.runId} />;
-      return <div className="empty">tensors group — pick a step file from the sidebar</div>;
+      return <div className="empty">pick a snapshot from the sidebar</div>;
     }
     if (t.kind === "npz") return <NpzAttentionTab npz={t.ref} />;
     if (t.kind === "multi") return <MultiCompareTab refs={t.refs} sources={sources} />;
     if (t.kind === "configurator") return <ConfiguratorTab onOpenRunTab={(runId) => addTab({ kind: "run", runId })} />;
+    if (t.kind === "llm_validate") return <LlmValidateTab runId={t.runId} />;
     return <PairCompareTab a={t.a} b={t.b} sources={sources} />;
   };
 

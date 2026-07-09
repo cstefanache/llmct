@@ -7,6 +7,7 @@ __pycache__/
 runs/
 *.npz
 .DS_Store
+.env
 results
 post
 viewer_web/node_modules/

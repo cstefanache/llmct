@@ -6,6 +6,8 @@ import {
 } from "./api";
 import { LineChart, LineSeries } from "./LineChart";
 import { PcaScatter } from "./MultiCompareTab";
+import { baseLabel } from "./refLabels";
+import { getLabelOverride, useLabelOverrides } from "./labelStore";
 
 const CONVERGENCE_SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out"];
 
@@ -38,7 +40,9 @@ export function PairCompareTab({
   const [metaB, setMetaB] = useState<NpzMeta | null>(null);
   const [layer, setLayer] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
-  const handleDownload = () => openReport({ kind: "pair", a, b, sources });
+  useLabelOverrides(); // pick up custom labels for the header/report
+  const handleDownload = () =>
+    openReport({ kind: "pair", a, b, sources, a_label: getLabelOverride(a), b_label: getLabelOverride(b) });
   const [attnUrls, setAttnUrls] = useState<Record<string, string>>({});
   const [qkUrls, setQkUrls] = useState<Record<string, string>>({});
   const [qkvUrls, setQkvUrls] = useState<Record<string, string>>({});
@@ -157,8 +161,8 @@ export function PairCompareTab({
       })
       .filter((x): x is LineSeries => !!x);
 
-  const aName = `${a.run_id} ${a.kind}:${a.name}`;
-  const bName = `${b.run_id} ${b.kind}:${b.name}`;
+  const aName = baseLabel(a);
+  const bName = baseLabel(b);
 
   const xsForMetrics = (metrics[sources[0]]?.layers ?? []) as number[];
 

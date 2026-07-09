@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   NpzRef,
   AdvancedMetricsResponse,
@@ -13,8 +13,11 @@ import {
   getNpzConvergence,
   openReport,
 } from "./api";
-import { LineChart, LineSeries } from "./LineChart";
+import { LineSeries } from "./LineChart";
 import { makeRefLabels } from "./refLabels";
+import { getLabelOverride, useLabelOverrides } from "./labelStore";
+import { RefLabelEditor } from "./RefLabelEditor";
+import { LayerChips, LayerRangeSlider, FilteredLineChart, filterPcaLayers } from "./LayerFilter";
 
 const PAIR_COLORS = [
   "#2563eb", "#16a34a", "#dc2626", "#a855f7", "#f97316",
@@ -343,10 +346,11 @@ function pcaDistanceToCentroidSeries(
 // ─── spectral charts ──────────────────────────────────────────────────────────
 
 function SpectralCharts({
-  svd, refLabels,
+  svd, refLabels, hidden,
 }: {
   svd: SvdSourceResult;
   refLabels: string[];
+  hidden: Set<number>;
 }) {
   const xs = svd.layers;
   const hasEffRank = svd.refs.some((r) => r.effective_rank.some((v) => v !== null));
@@ -368,7 +372,7 @@ function SpectralCharts({
           what="Largest singular value of each snapshot's per-layer activation matrix — i.e. the magnitude of its dominant direction. For T=1 captures it reduces to the L2 norm."
           how="Higher = stronger overall activation at that layer. Snapshots whose lines track each other have similar magnitude profiles; sudden gaps mark layers where one snapshot 'fires harder' than another."
         />
-        <LineChart xs={xs} series={mkSeries("spectral_norm")} />
+        <FilteredLineChart xs={xs} series={mkSeries("spectral_norm")} hidden={hidden} />
       </div>
       <div className="section">
         <h4>Nuclear norm (Σσᵢ) per layer</h4>
@@ -376,7 +380,7 @@ function SpectralCharts({
           what="Sum of singular values — total energy spread across all directions of the activation matrix."
           how="High nuclear with low spectral norm = energy spread across many features (rich representation). High spectral with low nuclear = concentrated on a single mode."
         />
-        <LineChart xs={xs} series={mkSeries("nuclear_norm")} />
+        <FilteredLineChart xs={xs} series={mkSeries("nuclear_norm")} hidden={hidden} />
       </div>
       {hasEffRank && (
         <div className="section">
@@ -385,7 +389,7 @@ function SpectralCharts({
             what="exp(entropy of normalized singular values). A continuous count of 'how many directions are actually used' at that layer."
             how="Rising curves = layer engages more independent features; flat low values = activations collapse onto a few directions. Compare snapshots to spot where some collapse and others don't."
           />
-          <LineChart xs={xs} series={mkSeries("effective_rank")} />
+          <FilteredLineChart xs={xs} series={mkSeries("effective_rank")} hidden={hidden} />
         </div>
       )}
     </>
@@ -408,7 +412,13 @@ export function MultiCompareTab({
   const [entropyData, setEntropyData] = useState<(EntropyResponse | null)[]>([]);
   const [convData, setConvData] = useState<(ConvergenceResponse | null)[]>([]);
   const [convSource, setConvSource] = useState<string>("hidden_out");
-  const handleDownload = () => openReport({ kind: "multi", refs, sources });
+  const [hiddenLayers, setHiddenLayers] = useState<Set<number>>(new Set());
+  const lastClicked = useRef<number | null>(null);
+  useLabelOverrides(); // recompute chart labels when a custom label changes
+  // Send only custom overrides ("" elsewhere) so the report keeps its own
+  // full-run-id label for snapshots the user hasn't renamed.
+  const handleDownload = () =>
+    openReport({ kind: "multi", refs, sources, labels: refs.map((r) => getLabelOverride(r) ?? "") });
 
   const refsKey = useMemo(
     () => refs.map((r) => `${r.run_id}|${r.kind}|${r.name}`).join("::"),
@@ -502,13 +512,50 @@ export function MultiCompareTab({
     ? pcaDistanceToCentroidSeries(adv.pca[source], refLabels)
     : null;
 
+  // ── global per-page layer filter ──
+  const layerSet = new Set<number>();
+  entropyXs.forEach((x) => layerSet.add(x));
+  convXs.forEach((x) => layerSet.add(x));
+  grp?.layers.forEach((x) => layerSet.add(x));
+  adv?.pca[source]?.layers.forEach((x) => layerSet.add(x));
+  adv?.svd[source]?.layers.forEach((x) => layerSet.add(x));
+  const allLayers = [...layerSet].sort((a, b) => a - b);
+
+  const toggleLayer = (layer: number, shift: boolean) => {
+    setHiddenLayers((prev) => {
+      const next = new Set(prev);
+      const willHide = !next.has(layer);
+      const from = shift && lastClicked.current !== null ? lastClicked.current : layer;
+      const lo = Math.min(from, layer), hi = Math.max(from, layer);
+      for (const l of allLayers) {
+        if (l >= lo && l <= hi) {
+          if (willHide) next.add(l); else next.delete(l);
+        }
+      }
+      return next;
+    });
+    lastClicked.current = layer;
+  };
+  const showAllLayers = () => setHiddenLayers(new Set());
+  const hideAllLayers = () => setHiddenLayers(new Set(allLayers));
+
+  // range slider reflects the current min/max shown layer and bulk-sets a window
+  const shownLayers = allLayers.filter((l) => !hiddenLayers.has(l));
+  const rangeFrom = shownLayers.length ? shownLayers[0] : (allLayers[0] ?? 0);
+  const rangeTo = shownLayers.length ? shownLayers[shownLayers.length - 1] : (allLayers[allLayers.length - 1] ?? 0);
+  const setRange = (from: number, to: number) =>
+    setHiddenLayers(new Set(allLayers.filter((l) => l < from || l > to)));
+
   return (
     <div>
       <div className="controls">
         <button className="btn-toggle" onClick={handleDownload}>↓ open report
         </button>
-        <span className="muted"><b>Refs ({refs.length}):</b> {refLabels.join(", ")}</span>
+        <span className="muted"><b>Refs ({refs.length}):</b> rename to disambiguate</span>
       </div>
+
+      <RefLabelEditor refs={refs} colors={PAIR_COLORS} />
+
 
       <div className="controls">
         <label>
@@ -521,6 +568,29 @@ export function MultiCompareTab({
         </label>
       </div>
 
+      {allLayers.length > 0 && (
+        <LayerRangeSlider
+          min={allLayers[0]}
+          max={allLayers[allLayers.length - 1]}
+          from={rangeFrom}
+          to={rangeTo}
+          onChange={setRange}
+        />
+      )}
+      <LayerChips
+        layers={allLayers}
+        hidden={hiddenLayers}
+        onToggle={toggleLayer}
+        onShowAll={showAllLayers}
+        onHideAll={hideAllLayers}
+      />
+      {hiddenLayers.size > 0 && (
+        <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+          Line charts and the PCA trajectory show only enabled layers. The layer-averaged
+          matrices (cosine / Jaccard / dendrogram) still average over all layers.
+        </div>
+      )}
+
       {/* ── attention entropy ─────────────────────────────── */}
       <div className="section">
         <h4>Attention entropy per layer</h4>
@@ -529,7 +599,7 @@ export function MultiCompareTab({
           how="Higher = attention is spread broadly across tokens; lower = focused on a few. Curves that dip together at the same layer indicate snapshots that all sharpen attention at that depth."
         />
         {entropySeries.length > 0
-          ? <LineChart xs={entropyXs} series={entropySeries} />
+          ? <FilteredLineChart xs={entropyXs} series={entropySeries} hidden={hiddenLayers} />
           : <div className="muted">no snapshot has attention weights captured</div>}
         {entropyMissing > 0 && entropySeries.length > 0 && (
           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
@@ -585,13 +655,13 @@ export function MultiCompareTab({
         {loadedConv > 0 && (
           <>
             <h5 style={{ marginTop: 16, marginBottom: 4 }}>Adjacent-layer cosine — last token</h5>
-            <LineChart xs={convXs} series={mkConvSeries("adj_cosine_last")} height={220} />
+            <FilteredLineChart xs={convXs} series={mkConvSeries("adj_cosine_last")} hidden={hiddenLayers} height={220} />
             <h5 style={{ marginTop: 16, marginBottom: 4 }}>Adjacent-layer cosine — mean over sequence</h5>
-            <LineChart xs={convXs} series={mkConvSeries("adj_cosine_mean")} height={220} />
+            <FilteredLineChart xs={convXs} series={mkConvSeries("adj_cosine_mean")} hidden={hiddenLayers} height={220} />
             <h5 style={{ marginTop: 16, marginBottom: 4 }}>Relative update norm ‖Δh‖/‖h‖ — last token</h5>
-            <LineChart xs={convXs} series={mkConvSeries("delta_norm_last")} height={220} />
+            <FilteredLineChart xs={convXs} series={mkConvSeries("delta_norm_last")} hidden={hiddenLayers} height={220} />
             <h5 style={{ marginTop: 16, marginBottom: 4 }}>Relative update norm ‖Δh‖/‖h‖ — mean over sequence</h5>
-            <LineChart xs={convXs} series={mkConvSeries("delta_norm_mean")} height={220} />
+            <FilteredLineChart xs={convXs} series={mkConvSeries("delta_norm_mean")} hidden={hiddenLayers} height={220} />
           </>
         )}
       </div>
@@ -611,7 +681,7 @@ export function MultiCompareTab({
                 what="At each layer we compute the mean activation across all snapshots (the 'group centroid') and plot every snapshot's cosine similarity to that centroid."
                 how="Curves near 1.0 = snapshot agrees with the group at that layer. A line that dips at a specific layer flags where that snapshot diverges from the consensus. Similar curves = matching pattern; outlier line = the odd one out."
               />
-              <LineChart xs={grp.layers} series={cosCentroidSeries} height={260} />
+              <FilteredLineChart xs={grp.layers} series={cosCentroidSeries} hidden={hiddenLayers} height={260} />
             </div>
 
             {/* layer divergence */}
@@ -621,7 +691,7 @@ export function MultiCompareTab({
                 what="At each layer, average pairwise cosine across all N(N−1)/2 snapshot pairs, then plot 1 minus that. A scalar 'how much the group disagrees' per depth."
                 how="Near 0 = all snapshots agree at this layer. Spikes mark depths where snapshots diverge most — a useful pointer to where in the network the differences live."
               />
-              <LineChart xs={grp.layers} series={divergenceSeries} height={220} />
+              <FilteredLineChart xs={grp.layers} series={divergenceSeries} hidden={hiddenLayers} height={220} />
             </div>
 
             {/* all-pairs cosine matrix */}
@@ -668,7 +738,7 @@ export function MultiCompareTab({
         {!adv && !advError && <div className="muted">computing PCA…</div>}
         {adv && (
           adv.pca[source]
-            ? <PcaScatter data={adv.pca[source]} refLabels={refLabels} />
+            ? <PcaScatter data={filterPcaLayers(adv.pca[source], hiddenLayers)} refLabels={refLabels} />
             : <div className="muted">no PCA data for {source}</div>
         )}
       </div>
@@ -681,13 +751,13 @@ export function MultiCompareTab({
             what="Per layer, distance in PC1–PC2 space from each snapshot's mean activation to the layer's centroid (mean of all snapshots)."
             how="Quantifies what the scatter shows visually. A line near 0 = snapshot sits on top of the consensus at that layer; a spike marks the depth at which it strays. Easier to compare than reading distances off the 2D plot."
           />
-          <LineChart xs={pcaDistView.xs} series={pcaDistView.series} height={220} />
+          <FilteredLineChart xs={pcaDistView.xs} series={pcaDistView.series} hidden={hiddenLayers} height={220} />
         </div>
       )}
 
       {/* ── spectral charts ───────────────────────────────────── */}
       {adv && adv.svd[source] && (
-        <SpectralCharts svd={adv.svd[source]} refLabels={refLabels} />
+        <SpectralCharts svd={adv.svd[source]} refLabels={refLabels} hidden={hiddenLayers} />
       )}
     </div>
   );

@@ -287,7 +287,7 @@ def _js_var(name: str, value: Any, comment: str) -> str:
     return "\n".join(lines)
 
 
-def _canvas_chart(var_name: str, height: int = 220) -> str:
+def _canvas_chart(var_name: str, height: int = 420) -> str:
     return (
         f'<div class="chart-wrap" style="height:{height}px;max-width:700px">'
         f'<canvas data-chart="{var_name}"></canvas>'
@@ -347,10 +347,10 @@ def _html_matrix_heatmap(
                 f'<td style="background:{_bg(v)};color:{_fg(v)};'
                 f'text-align:center;min-width:52px;font-size:11px">{val_str}</td>'
             )
-        rows_html += f'<tr><td style="font-size:10px;white-space:nowrap">{_safe(labels[i][:24])}</td>{cells}</tr>'
+        rows_html += f'<tr><td style="font-size:10px;white-space:nowrap">{_safe(labels[i])}</td>{cells}</tr>'
 
     header_cells = "".join(
-        f'<th style="font-size:10px;max-width:80px;word-break:break-all">{_safe(l[:16])}</th>'
+        f'<th style="font-size:10px;max-width:80px;word-break:break-all">{_safe(l)}</th>'
         for l in labels
     )
     return (
@@ -941,7 +941,7 @@ def generate_run_report(registry: RunRegistry, run_id: str) -> str:
                 {"xs": logit_steps, "series": [{"label": labels[metric], "data": ls_dict[metric], "stroke": colors[metric]}]},
                 comment,
             ))
-            charts_html += f"<h4>{_safe(title)}</h4>" + _canvas_chart(var_name, height=160)
+            charts_html += f"<h4>{_safe(title)}</h4>" + _canvas_chart(var_name, height=300)
 
         toc.append(("Next-token distribution peakedness", "logit-stats"))
         sections += _section("Next-token distribution peakedness", "logit-stats", charts_html, accent="#a855f7")
@@ -1070,13 +1070,16 @@ def generate_npz_report(registry: RunRegistry, ref: dict, sources: list[str]) ->
     return _full_page(f"Activation Lab — NPZ report: {name}", subtitle, toc, sections, js_vars)
 
 
-def generate_pair_report(registry: RunRegistry, a: dict, b: dict, sources: list[str]) -> str:
+def generate_pair_report(
+    registry: RunRegistry, a: dict, b: dict, sources: list[str],
+    a_label: str | None = None, b_label: str | None = None,
+) -> str:
     from .loader import resolve_npz
     ta = load_npz(resolve_npz(registry, a["run_id"], a["kind"], a["name"]))
     tb = load_npz(resolve_npz(registry, b["run_id"], b["kind"], b["name"]))
 
-    a_label = f"{a['run_id'][:15]} / {a['kind']} / {a['name']}"
-    b_label = f"{b['run_id'][:15]} / {b['kind']} / {b['name']}"
+    a_label = a_label or f"{a['run_id']} / {a['kind']} / {a['name']}"
+    b_label = b_label or f"{b['run_id']} / {b['kind']} / {b['name']}"
 
     js_vars: list[str] = []
     sections = ""
@@ -1154,10 +1157,17 @@ def generate_pair_report(registry: RunRegistry, a: dict, b: dict, sources: list[
     return _full_page("Activation Lab — Pair comparison report", subtitle, toc, sections, js_vars)
 
 
-def generate_multi_report(registry: RunRegistry, refs: list[dict], sources: list[str]) -> str:
+def generate_multi_report(
+    registry: RunRegistry, refs: list[dict], sources: list[str],
+    labels: list[str] | None = None,
+) -> str:
     from .loader import resolve_npz
     loaded = [load_npz(resolve_npz(registry, r["run_id"], r["kind"], r["name"])) for r in refs]
-    ref_labels = [f"{r['run_id'][:15]} / {r['kind']} / {r['name']}" for r in refs]
+    ref_labels = [
+        (labels[i] if labels and i < len(labels) and labels[i] else
+         f"{r['run_id']} / {r['kind']} / {r['name']}")
+        for i, r in enumerate(refs)
+    ]
 
     js_vars: list[str] = []
     sections = ""
@@ -1224,7 +1234,7 @@ def generate_multi_report(registry: RunRegistry, refs: list[dict], sources: list
             ref_html = (
                 f"<b>{_safe(ref_labels[i])}</b> — "
                 f"eff.depth last: {badge(edl)}, mean: {badge(edm)}"
-                + _canvas_chart(var_name, height=180)
+                + _canvas_chart(var_name, height=300)
             )
             src_html += f"<div style='margin-bottom:16px'>{ref_html}</div>"
         if src_html:

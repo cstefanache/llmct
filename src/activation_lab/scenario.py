@@ -62,6 +62,21 @@ class OutputConfig(BaseModel):
     format: Literal["json+npz"] = "json+npz"
 
 
+class LLMValidateConfig(BaseModel):
+    """Configuration for a frontier-model evaluator run after generation.
+
+    ``model`` selects a provider/model identifier whose API key must be set in
+    ``.env`` (one of GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).
+    ``system_prompt`` and ``prompt`` may contain the placeholders
+    ``{{test_system_prompt}}``, ``{{test_prompt}}``, ``{{model_output}}``, and
+    ``{{full_conversation}}`` which are substituted from the just-completed run.
+    """
+
+    model: str
+    system_prompt: str = ""
+    prompt: str
+
+
 class Scenario(BaseModel):
     name: str
     model: ModelConfig
@@ -70,6 +85,7 @@ class Scenario(BaseModel):
     capture: CaptureConfig = CaptureConfig()
     output: OutputConfig = OutputConfig()
     reference_states: list[ReferenceState] = []
+    llm_validate: list[LLMValidateConfig] = []
 
     @field_validator("prompt", mode="before")
     @classmethod

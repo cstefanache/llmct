@@ -22,6 +22,15 @@ from .serialize import (
     write_scenario_manifest,
     write_step,
     write_steps_json,
+    write_validation_results,
+    write_validation_snapshot,
+    write_validation_snapshot_index,
+)
+from .validate import (
+    extract_test_inputs,
+    format_conversation,
+    load_dotenv,
+    run_validator,
 )
 
 app = typer.Typer(add_completion=False, help="Capture per-step LLM activations.")
@@ -78,6 +87,99 @@ def _capture_conversation_snapshots(
         })
     write_conversation_snapshot_index(run_dir, snap_info)
     console.print(f"  [green]{len(messages)} snapshot(s) saved[/green]")
+
+
+def _safe_label(text: str, fallback: str) -> str:
+    cleaned = "".join(c if c.isalnum() or c in "-_" else "_" for c in text)
+    cleaned = cleaned.strip("_")
+    return cleaned or fallback
+
+
+def _run_llm_validations(
+    scenario: Scenario,
+    run_dir,
+    model,
+    tokenizer,
+    arch,
+    device,
+    generated_text: str,
+) -> None:
+    """Run each configured frontier-model evaluator and snapshot the test model after.
+
+    The validator output is appended to the conversation as a final ``user`` turn,
+    then a prefill capture records the test model's state for that extended history.
+    """
+    if not scenario.llm_validate:
+        return
+
+    load_dotenv()
+    base_messages = list(scenario.prompt[0].messages)
+    full_messages = list(base_messages)
+    if generated_text:
+        full_messages.append(Message(role="assistant", content=generated_text))
+
+    test_system_prompt, test_prompt, model_output = extract_test_inputs(
+        base_messages, generated_text
+    )
+    full_conversation = format_conversation(base_messages, generated_text)
+
+    console.print(
+        f"[bold]Running {len(scenario.llm_validate)} LLM validation(s)...[/bold]"
+    )
+
+    results: list[dict] = []
+    snapshots: list[dict] = []
+    for idx, cfg in enumerate(scenario.llm_validate):
+        console.print(f"  [dim]validator {idx} → {cfg.model}[/dim]")
+        try:
+            result = run_validator(
+                cfg,
+                test_system_prompt=test_system_prompt,
+                test_prompt=test_prompt,
+                model_output=model_output,
+                full_conversation=full_conversation,
+            )
+        except Exception as exc:
+            console.print(f"  [red]validator {idx} failed: {exc}[/red]")
+            results.append({
+                "model": cfg.model,
+                "system_prompt_template": cfg.system_prompt,
+                "prompt_template": cfg.prompt,
+                "error": str(exc),
+            })
+            continue
+
+        result["index"] = idx
+        results.append(result)
+
+        validator_output = result["output"]
+        if not validator_output:
+            console.print(f"  [yellow]validator {idx} produced empty output; skipping snapshot[/yellow]")
+            continue
+
+        snapshot_messages = full_messages + [
+            Message(role="user", content=validator_output)
+        ]
+        tensors, input_ids = capture_reference_prefill(
+            model, tokenizer, arch, snapshot_messages, scenario.capture, device
+        )
+        label = _safe_label(cfg.model, fallback=f"validator_{idx}")
+        write_validation_snapshot(run_dir, idx, label, tensors)
+        snapshots.append({
+            "index": idx,
+            "label": label,
+            "model": cfg.model,
+            "provider": result["provider"],
+            "input_token_ids": input_ids,
+            "seq_len": len(input_ids),
+            "tensors_file": f"snapshot_{idx:02d}_{label}.npz",
+            "tensor_index": _tensor_index(tensors),
+        })
+
+    write_validation_results(run_dir, results)
+    if snapshots:
+        write_validation_snapshot_index(run_dir, snapshots)
+    console.print(f"  [green]{len(results)} validation result(s) saved[/green]")
 
 
 def _capture_reference_states(
@@ -145,11 +247,15 @@ def _execute_run(
     _capture_conversation_snapshots(
         scenario, paths.root, model, tokenizer, arch, device, generated_text
     )
+    _run_llm_validations(
+        scenario, paths.root, model, tokenizer, arch, device, generated_text
+    )
 
 
 @app.command()
 def run(
     scenario_path: Path = typer.Argument(..., help="Scenario YAML file or directory of YAML files."),
+    temperature: float | None = typer.Option(None, "--temperature", help="Override generation temperature (also enables do_sample)."),
 ) -> None:
     """Execute a scenario YAML file (or every YAML in a folder) and write run directories."""
     if not scenario_path.exists():
@@ -170,6 +276,13 @@ def run(
 
     for yaml_file in yaml_files:
         scenario = load_scenario(yaml_file)
+        if temperature is not None:
+            scenario = scenario.model_copy(
+                update={"generation": scenario.generation.model_copy(
+                    update={"temperature": temperature, "do_sample": True}
+                )}
+            )
+            console.print(f"[dim]temperature override: {temperature} (do_sample=True)[/dim]")
         console.print(f"\n[bold]Scenario:[/bold] {scenario.name}  [dim]({yaml_file.name})[/dim]")
         console.print(f"[bold]Model:[/bold] {scenario.model.id}")
 

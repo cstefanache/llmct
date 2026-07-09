@@ -1,4 +1,4 @@
-export type Kind = "snapshot" | "reference" | "step";
+export type Kind = "snapshot" | "validation_snapshot" | "reference" | "step";
 
 export interface NpzRef {
   run_id: string;
@@ -27,13 +27,30 @@ export interface TreeNode {
 }
 
 export interface TreeGroup {
-  type: "conversation_snapshots" | "references" | "tensors";
+  type: "conversation_snapshots" | "validation_snapshots" | "references" | "tensors";
   children: TreeNode[];
 }
 
 export interface RunTree {
   run_id: string;
   children: TreeGroup[];
+  has_llm_validate?: boolean;
+}
+
+export interface LlmValidationEntry {
+  model: string;
+  provider?: string;
+  system_prompt_template?: string;
+  prompt_template?: string;
+  rendered_system_prompt?: string;
+  rendered_prompt?: string;
+  output?: string;
+  error?: string;
+  index?: number;
+}
+
+export interface LlmValidateResult {
+  validations: LlmValidationEntry[];
 }
 
 export interface NpzMeta {
@@ -193,6 +210,12 @@ export async function getTree(runId: string): Promise<RunTree> {
   return r.json();
 }
 
+export async function getLlmValidate(runId: string): Promise<LlmValidateResult> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/llm_validate`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function getNpzMeta(ref: NpzRef): Promise<NpzMeta> {
   const r = await fetch(
     `/api/runs/${encodeURIComponent(ref.run_id)}/npz/${ref.kind}/${encodeURIComponent(ref.name)}/meta`,
@@ -299,6 +322,20 @@ export async function listLocalModels(): Promise<LocalModel[]> {
   return r.json();
 }
 
+export type ValidatorProvider = "gemini" | "claude" | "openai";
+
+export interface ValidatorModelsResponse {
+  /** Per-provider value is a list of model ids, or {error} when the listing call failed.
+   *  Providers without a configured API key are omitted entirely. */
+  providers: Partial<Record<ValidatorProvider, string[] | { error: string }>>;
+}
+
+export async function listValidatorModels(): Promise<ValidatorModelsResponse> {
+  const r = await fetch("/api/models/validators");
+  if (!r.ok) return { providers: {} };
+  return r.json();
+}
+
 export async function launchScenario(path: string): Promise<{ job_id: string }> {
   const r = await fetch("/api/runs/launch", {
     method: "POST",
@@ -336,6 +373,11 @@ export interface ReportRequest {
   b?: NpzRef;
   refs?: NpzRef[];
   sources?: string[];
+  /** Custom labels honored by the exported report. */
+  a_label?: string;
+  b_label?: string;
+  /** Parallel to `refs` (multi report). */
+  labels?: string[];
 }
 
 export function openReport(req: ReportRequest): void {

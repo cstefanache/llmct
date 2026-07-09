@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { RunSummary, TreeNode, TreeGroup, RunTree, listRuns, getTree, NpzRef } from "./api";
 
 export interface Selection {
-  kind: "run" | "group" | "npz";
+  kind: "run" | "group" | "npz" | "llm_validate";
   runId: string;
   groupType?: TreeGroup["type"];
   npz?: TreeNode;
@@ -102,51 +102,70 @@ export function Sidebar({ selected, selectedNpz, onSelect, onToggleNpz }: Sideba
           <span className="chev">{isOpen ? "▾" : "▸"}</span>
           <span>{display}</span>
         </div>
-        {isOpen && trees[r.id]?.children.map((group) => {
-          const gkey = `${r.id}::${group.type}`;
-          const gOpen = openGroups.has(gkey);
-          const gSelected = selected?.kind === "group" && selected.runId === r.id && selected.groupType === group.type;
+        {isOpen && (() => {
+          const tree = trees[r.id];
+          if (!tree) return null;
           const gIndent = indent === 1 ? "indent-2" : "indent-1";
           const leafIndent = indent === 1 ? "indent-3" : "indent-2";
+          const valSelected = selected?.kind === "llm_validate" && selected.runId === r.id;
           return (
-            <div key={gkey}>
-              <div
-                className={`node ${gIndent} ${gSelected ? "selected" : ""}`}
-                onClick={() => {
-                  toggleGroup(gkey);
-                  onSelect({ kind: "group", runId: r.id, groupType: group.type });
-                }}
-              >
-                <span className="chev">{gOpen ? "▾" : "▸"}</span>
-                <span>{group.type} <span className="muted">({group.children.length})</span></span>
-              </div>
-              {gOpen && group.children.map((n) => {
-                const ref: NpzRef = { run_id: r.id, kind: n.kind, name: n.name };
-                const npzSel = selected?.kind === "npz" && selected.runId === r.id && selected.npz?.name === n.name;
+            <>
+              {tree.children.map((group) => {
+                const gkey = `${r.id}::${group.type}`;
+                const gOpen = openGroups.has(gkey);
+                const gSelected = selected?.kind === "group" && selected.runId === r.id && selected.groupType === group.type;
                 return (
-                  <div
-                    key={`${gkey}::${n.name}`}
-                    className={`node leaf ${leafIndent} ${npzSel ? "selected" : ""}`}
-                    onClick={(e) => {
-                      if ((e.target as HTMLElement).tagName === "INPUT") return;
-                      onSelect({ kind: "npz", runId: r.id, npz: n });
-                    }}
-                  >
-                    <span className="chev" />
-                    <input
-                      type="checkbox"
-                      className="check"
-                      checked={isChecked(r.id, n)}
-                      onChange={() => onToggleNpz(ref, n)}
-                    />
-                    <span title={n.label}>{n.label}</span>
-                    {n.has_attention === true && <span className="pill attn">attn</span>}
+                  <div key={gkey}>
+                    <div
+                      className={`node ${gIndent} ${gSelected ? "selected" : ""}`}
+                      onClick={() => {
+                        toggleGroup(gkey);
+                        onSelect({ kind: "group", runId: r.id, groupType: group.type });
+                      }}
+                    >
+                      <span className="chev">{gOpen ? "▾" : "▸"}</span>
+                      <span>{group.type} <span className="muted">({group.children.length})</span></span>
+                    </div>
+                    {gOpen && group.children.map((n) => {
+                      const ref: NpzRef = { run_id: r.id, kind: n.kind, name: n.name };
+                      const npzSel = selected?.kind === "npz" && selected.runId === r.id && selected.npz?.name === n.name;
+                      return (
+                        <div
+                          key={`${gkey}::${n.name}`}
+                          className={`node leaf ${leafIndent} ${npzSel ? "selected" : ""}`}
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).tagName === "INPUT") return;
+                            onSelect({ kind: "npz", runId: r.id, npz: n });
+                          }}
+                        >
+                          <span className="chev" />
+                          <input
+                            type="checkbox"
+                            className="check"
+                            checked={isChecked(r.id, n)}
+                            onChange={() => onToggleNpz(ref, n)}
+                          />
+                          <span title={n.label}>{n.label}</span>
+                          {n.has_attention === true && <span className="pill attn">attn</span>}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
-            </div>
+              {tree.has_llm_validate && (
+                <div
+                  className={`node leaf ${gIndent} ${valSelected ? "selected" : ""}`}
+                  onClick={() => onSelect({ kind: "llm_validate", runId: r.id })}
+                >
+                  <span className="chev" />
+                  <span>llm_validate</span>
+                  <span className="pill validate">validate</span>
+                </div>
+              )}
+            </>
           );
-        })}
+        })()}
       </div>
     );
   };

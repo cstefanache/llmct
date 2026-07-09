@@ -48,6 +48,12 @@ export interface OutputConfig {
   format: "json+npz";
 }
 
+export interface LLMValidateConfig {
+  model: string;
+  system_prompt: string;
+  prompt: string;
+}
+
 export interface ScenarioModel {
   name: string;
   model: ModelConfig;
@@ -56,6 +62,7 @@ export interface ScenarioModel {
   capture: CaptureConfig;
   output: OutputConfig;
   reference_states: ReferenceState[];
+  llm_validate: LLMValidateConfig[];
 }
 
 export function defaultPrompt(): PromptConfig {
@@ -71,6 +78,15 @@ export function defaultScenario(): ScenarioModel {
     capture: { hidden_states: true, attention_weights: true, qkv: true, mlp: true, logits: true, top_k_probs: 20, layers: "all", store_dtype: "float16" },
     output: { dir: "./runs", format: "json+npz" },
     reference_states: [],
+    llm_validate: [],
+  };
+}
+
+export function defaultLLMValidate(): LLMValidateConfig {
+  return {
+    model: "",
+    system_prompt: "You are an expert evaluator. Score the assistant's reply for accuracy, helpfulness, and tone.",
+    prompt: "Conversation:\n{{full_conversation}}\n\nAssistant output to evaluate:\n{{model_output}}",
   };
 }
 
@@ -82,6 +98,8 @@ export function scenarioToYaml(s: ScenarioModel): string {
   const gen = obj.generation as Record<string, unknown>;
   if (gen.top_k == null) delete gen.top_k;
   if (gen.top_p == null) delete gen.top_p;
+  const validators = obj.llm_validate as unknown[] | undefined;
+  if (!validators || validators.length === 0) delete obj.llm_validate;
   return yaml.dump(obj, { sortKeys: false, lineWidth: 120 });
 }
 
@@ -121,6 +139,10 @@ export function yamlToScenario(text: string): ScenarioModel {
     },
     output: { ...d.output, ...(raw.output as object ?? {}) },
     reference_states: (raw.reference_states as ScenarioModel["reference_states"]) ?? [],
+    llm_validate: ((raw.llm_validate as Partial<LLMValidateConfig>[] | undefined) ?? []).map((v) => ({
+      ...defaultLLMValidate(),
+      ...(v ?? {}),
+    })),
   };
   return merged;
 }

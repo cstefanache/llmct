@@ -1,6 +1,14 @@
-import { useEffect, useState } from "react";
-import { listLocalModels, LocalModel } from "../api";
-import { defaultPrompt, Message, PromptConfig, ScenarioModel } from "./scenarioModel";
+import { useEffect, useMemo, useState } from "react";
+import { listLocalModels, listValidatorModels, LocalModel, ValidatorModelsResponse, ValidatorProvider } from "../api";
+import { defaultLLMValidate, defaultPrompt, LLMValidateConfig, Message, PromptConfig, ScenarioModel } from "./scenarioModel";
+
+const PLACEHOLDERS = ["{{test_system_prompt}}", "{{test_prompt}}", "{{model_output}}", "{{full_conversation}}"] as const;
+
+const PROVIDER_LABEL: Record<ValidatorProvider, string> = {
+  gemini: "Google Gemini",
+  claude: "Anthropic Claude",
+  openai: "OpenAI",
+};
 
 interface Props {
   scenario: ScenarioModel;
@@ -10,10 +18,41 @@ interface Props {
 
 export function ScenarioForm({ scenario, onChange, disabled }: Props) {
   const [localModels, setLocalModels] = useState<LocalModel[]>([]);
+  const [validatorModels, setValidatorModels] = useState<ValidatorModelsResponse>({ providers: {} });
+  const [validatorModelsLoading, setValidatorModelsLoading] = useState(false);
+  const [validatorModelsLoaded, setValidatorModelsLoaded] = useState(false);
 
   useEffect(() => {
     listLocalModels().then(setLocalModels).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    setValidatorModelsLoading(true);
+    listValidatorModels()
+      .then((r) => setValidatorModels(r))
+      .catch(() => setValidatorModels({ providers: {} }))
+      .finally(() => {
+        setValidatorModelsLoading(false);
+        setValidatorModelsLoaded(true);
+      });
+  }, []);
+
+  // Flatten provider results into a single grouped list for selects/datalists.
+  const validatorModelGroups = useMemo(() => {
+    const groups: { provider: ValidatorProvider; label: string; models: string[]; error?: string }[] = [];
+    (Object.keys(validatorModels.providers) as ValidatorProvider[]).forEach((provider) => {
+      const value = validatorModels.providers[provider];
+      if (Array.isArray(value)) {
+        groups.push({ provider, label: PROVIDER_LABEL[provider], models: value });
+      } else if (value && typeof value === "object" && "error" in value) {
+        groups.push({ provider, label: PROVIDER_LABEL[provider], models: [], error: value.error });
+      }
+    });
+    return groups;
+  }, [validatorModels]);
+
+  const providersWithKey = validatorModelGroups.length;
+  const totalValidatorModels = validatorModelGroups.reduce((n, g) => n + g.models.length, 0);
 
   const set = <K extends keyof ScenarioModel>(key: K, val: ScenarioModel[K]) =>
     onChange({ ...scenario, [key]: val });
@@ -65,6 +104,26 @@ export function ScenarioForm({ scenario, onChange, disabled }: Props) {
   const updateRefState = (i: number, patch: Partial<ScenarioModel["reference_states"][0]>) => {
     const refs = scenario.reference_states.map((r, idx) => idx === i ? { ...r, ...patch } : r);
     set("reference_states", refs);
+  };
+
+  const addValidator = () =>
+    set("llm_validate", [...scenario.llm_validate, defaultLLMValidate()]);
+
+  const removeValidator = (i: number) =>
+    set("llm_validate", scenario.llm_validate.filter((_, idx) => idx !== i));
+
+  const updateValidator = (i: number, patch: Partial<LLMValidateConfig>) => {
+    const next = scenario.llm_validate.map((v, idx) => idx === i ? { ...v, ...patch } : v);
+    set("llm_validate", next);
+  };
+
+  const insertPlaceholder = (
+    i: number,
+    field: "system_prompt" | "prompt",
+    placeholder: string,
+  ) => {
+    const current = scenario.llm_validate[i][field] ?? "";
+    updateValidator(i, { [field]: current + (current && !current.endsWith("\n") ? " " : "") + placeholder });
   };
 
   const updateRefMsg = (ri: number, mi: number, patch: Partial<Message>) => {
@@ -236,14 +295,12 @@ export function ScenarioForm({ scenario, onChange, disabled }: Props) {
               onChange={(e) => setGeneration({ do_sample: e.target.checked })} />
             {" "}do sample
           </label>
-          {scenario.generation.do_sample && (
-            <label>
-              temperature
-              <input type="number" step={0.1} min={0} value={scenario.generation.temperature}
-                onChange={(e) => setGeneration({ temperature: parseFloat(e.target.value) || 1 })}
-                style={{ width: 70 }} />
-            </label>
-          )}
+          <label style={{ opacity: scenario.generation.do_sample ? 1 : 0.45 }}>
+            temperature
+            <input type="number" step={0.1} min={0} max={10} value={scenario.generation.temperature}
+              onChange={(e) => { const v = parseFloat(e.target.value); setGeneration({ temperature: isNaN(v) ? 1 : v }); }}
+              style={{ width: 70 }} />
+          </label>
           <label>
             top_k
             <input type="number" min={1} value={scenario.generation.top_k ?? ""}
@@ -358,6 +415,128 @@ export function ScenarioForm({ scenario, onChange, disabled }: Props) {
           </div>
         ))}
         <button className="btn-toggle" style={{ marginTop: 6 }} onClick={addRefState}>+ reference state</button>
+      </div>
+
+      {/* Frontier-model validation */}
+      <div className="section">
+        <h4>
+          LLM validation{" "}
+          <span className="muted">
+            (frontier model evaluates the assistant output; requires GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY in .env)
+          </span>
+        </h4>
+        {scenario.llm_validate.length === 0 && (
+          <div className="muted" style={{ paddingLeft: 4, marginBottom: 6 }}>
+            No validators configured. The frontier model output is stored in <code>llm_validate.json</code> and a snapshot
+            of the test model with that output appended is captured under <code>validation_snapshots/</code>.
+          </div>
+        )}
+        {scenario.llm_validate.map((v, vi) => (
+          <div key={vi} className="ref-state-block">
+            <div className="controls" style={{ justifyContent: "space-between" }}>
+              <strong>Validator {vi + 1}</strong>
+              <button className="btn-toggle" onClick={() => removeValidator(vi)} title="Remove validator">remove</button>
+            </div>
+            <div className="form-row">
+              <label>
+                Model{" "}
+                <span className="muted">
+                  {validatorModelsLoading
+                    ? "(loading available models…)"
+                    : providersWithKey === 0
+                      ? "(no provider keys found in .env — set GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY)"
+                      : `(${totalValidatorModels} model(s) across ${providersWithKey} provider(s))`}
+                </span>
+              </label>
+              {providersWithKey > 0 ? (
+                <select
+                  value={v.model}
+                  onChange={(e) => updateValidator(vi, { model: e.target.value })}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">— select a model —</option>
+                  {validatorModelGroups.map((g) => (
+                    g.models.length > 0 ? (
+                      <optgroup key={g.provider} label={g.label}>
+                        {g.models.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </optgroup>
+                    ) : (
+                      <optgroup key={g.provider} label={`${g.label} (error)`}>
+                        <option disabled>{g.error}</option>
+                      </optgroup>
+                    )
+                  ))}
+                  {/* keep a stale value selectable so YAML-loaded scenarios don't silently lose their model */}
+                  {v.model && !validatorModelGroups.some((g) => g.models.includes(v.model)) && (
+                    <option value={v.model}>{v.model} (not in current provider list)</option>
+                  )}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={v.model}
+                  onChange={(e) => updateValidator(vi, { model: e.target.value })}
+                  placeholder={validatorModelsLoaded ? "no API keys configured" : "loading…"}
+                  style={{ width: "100%" }}
+                  disabled={!validatorModelsLoaded}
+                />
+              )}
+            </div>
+
+            <div className="form-row" style={{ marginTop: 6 }}>
+              <label>
+                System prompt{" "}
+                <span className="muted">(supports {PLACEHOLDERS.join(", ")})</span>
+              </label>
+              <textarea
+                value={v.system_prompt}
+                onChange={(e) => updateValidator(vi, { system_prompt: e.target.value })}
+                rows={3}
+                style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
+              />
+              <div className="controls" style={{ flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                <span className="muted">insert:</span>
+                {PLACEHOLDERS.map((ph) => (
+                  <button
+                    key={ph}
+                    className="btn-toggle"
+                    style={{ fontSize: 11 }}
+                    onClick={() => insertPlaceholder(vi, "system_prompt", ph)}
+                  >
+                    {ph}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-row" style={{ marginTop: 6 }}>
+              <label>
+                Prompt{" "}
+                <span className="muted">(supports {PLACEHOLDERS.join(", ")})</span>
+              </label>
+              <textarea
+                value={v.prompt}
+                onChange={(e) => updateValidator(vi, { prompt: e.target.value })}
+                rows={5}
+                style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
+              />
+              <div className="controls" style={{ flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                <span className="muted">insert:</span>
+                {PLACEHOLDERS.map((ph) => (
+                  <button
+                    key={ph}
+                    className="btn-toggle"
+                    style={{ fontSize: 11 }}
+                    onClick={() => insertPlaceholder(vi, "prompt", ph)}
+                  >
+                    {ph}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+        <button className="btn-toggle" style={{ marginTop: 6 }} onClick={addValidator}>+ validator</button>
       </div>
     </div>
   );

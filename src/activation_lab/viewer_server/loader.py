@@ -101,6 +101,12 @@ class RunRegistry:
             return None
         return json.loads(path.read_text()).get("steps")
 
+    def validation_snapshots_index(self, run_id: str) -> list[dict] | None:
+        path = self.run_dir(run_id) / "validation_snapshots" / "index.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text()).get("snapshots")
+
 
 @lru_cache(maxsize=8)
 def _load_npz_cached(abs_path: str) -> dict[str, np.ndarray]:
@@ -134,6 +140,8 @@ def resolve_npz(registry: RunRegistry, run_id: str, kind: str, name: str) -> Pat
     """
     if kind == "snapshot":
         p = registry.run_dir(run_id) / "conversation_snapshots" / f"{name}.npz"
+    elif kind == "validation_snapshot":
+        p = registry.run_dir(run_id) / "validation_snapshots" / f"{name}.npz"
     elif kind == "reference":
         p = registry.references_dir(run_id) / f"{name}.npz"
     elif kind == "step":

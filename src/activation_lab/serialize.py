@@ -177,3 +177,35 @@ def write_conversation_snapshot_index(
     (run_dir / "conversation_snapshots" / "index.json").write_text(
         json.dumps({"snapshots": snapshots}), encoding="utf-8"
     )
+
+
+def write_validation_results(
+    run_dir: Path, results: list[dict[str, Any]]
+) -> None:
+    """Write the frontier-model evaluator inputs+outputs to llm_validate.json."""
+    (run_dir / "llm_validate.json").write_text(
+        json.dumps({"validations": results}, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def write_validation_snapshot(
+    run_dir: Path, idx: int, label: str, tensors: dict[str, np.ndarray]
+) -> None:
+    """Save the test-model state after the validator output is appended.
+
+    Stored under ``validation_snapshots/snapshot_NN_<label>.npz`` to keep these
+    distinct from the per-turn ``conversation_snapshots/`` directory.
+    """
+    snap_dir = run_dir / "validation_snapshots"
+    snap_dir.mkdir(exist_ok=True)
+    np.savez_compressed(snap_dir / f"snapshot_{idx:02d}_{label}.npz", **tensors)
+
+
+def write_validation_snapshot_index(
+    run_dir: Path, snapshots: list[dict[str, Any]]
+) -> None:
+    (run_dir / "validation_snapshots" / "index.json").write_text(
+        json.dumps({"snapshots": snapshots}, indent=2, default=str),
+        encoding="utf-8",
+    )
