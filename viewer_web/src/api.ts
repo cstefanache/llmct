@@ -76,6 +76,33 @@ export interface LogitStatsResponse {
   top1_prob: number[];
 }
 
+export interface LensToken {
+  id: number;
+  token: string | null;
+  logprob: number;
+  prob: number;
+}
+
+export interface LensLayer {
+  layer: number;
+  argmax_id: number;
+  argmax_token: string | null;
+  argmax_prob: number;
+  kl_from_final: number | null;
+  predicted: LensToken[];
+}
+
+export interface LensResponse {
+  run_id: string;
+  kind: Kind;
+  name: string;
+  model_id: string;
+  num_layers: number;
+  seq_len: number;
+  position: number;
+  layers: LensLayer[];
+}
+
 export interface ConvergenceResponse {
   layers: number[];
   adj_layers: number[];
@@ -188,6 +215,18 @@ export async function getNpzConvergence(
 ): Promise<ConvergenceResponse> {
   const r = await fetch(
     `/api/runs/${encodeURIComponent(ref.run_id)}/npz/${ref.kind}/${encodeURIComponent(ref.name)}/convergence?source=${encodeURIComponent(source)}`,
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getLogitLens(
+  ref: NpzRef,
+  position: number = -1,
+  top_k: number = 10,
+): Promise<LensResponse> {
+  const r = await fetch(
+    `/api/runs/${encodeURIComponent(ref.run_id)}/npz/${ref.kind}/${encodeURIComponent(ref.name)}/logit_lens?position=${position}&top_k=${top_k}`,
   );
   if (!r.ok) throw new Error(await r.text());
   return r.json();

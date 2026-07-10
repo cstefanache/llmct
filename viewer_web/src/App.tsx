@@ -7,6 +7,7 @@ import { ReferencesTab } from "./ReferencesTab";
 import { NpzAttentionTab } from "./NpzAttentionTab";
 import { PairCompareTab } from "./PairCompareTab";
 import { MultiCompareTab } from "./MultiCompareTab";
+import { LensCompareTab } from "./LensCompareTab";
 import { PinnedOverlayTab } from "./PinnedOverlayTab";
 import { ConfiguratorTab } from "./ConfiguratorTab";
 import { LlmValidateTab } from "./LlmValidateTab";
@@ -22,6 +23,7 @@ type ActiveTabKey =
   | { kind: "npz"; ref: NpzRef }
   | { kind: "pair"; a: NpzRef; b: NpzRef }
   | { kind: "multi"; refs: NpzRef[] }
+  | { kind: "lens"; refs: NpzRef[] }
   | { kind: "configurator" }
   | { kind: "llm_validate"; runId: string };
 
@@ -30,6 +32,7 @@ function tabId(t: ActiveTabKey): string {
   if (t.kind === "group") return `group:${t.runId}:${t.groupType}`;
   if (t.kind === "npz") return `npz:${t.ref.run_id}:${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return MULTI_TAB_ID;
+  if (t.kind === "lens") return "lens";
   if (t.kind === "configurator") return "configurator";
   if (t.kind === "llm_validate") return `llm_validate:${t.runId}`;
   return `pair:${t.a.run_id}:${t.a.kind}:${t.a.name}::${t.b.run_id}:${t.b.kind}:${t.b.name}`;
@@ -40,6 +43,7 @@ function tabLabel(t: ActiveTabKey): string {
   if (t.kind === "group") return t.groupType;
   if (t.kind === "npz") return `${t.ref.kind}:${t.ref.name}`;
   if (t.kind === "multi") return `compare all (${t.refs.length})`;
+  if (t.kind === "lens") return `token lens (${t.refs.length})`;
   if (t.kind === "configurator") return "new scenario";
   if (t.kind === "llm_validate") return "validation";
   return pairTabLabel(t.a, t.b);
@@ -154,6 +158,7 @@ export function App() {
     }
     if (t.kind === "npz") return <NpzAttentionTab npz={t.ref} />;
     if (t.kind === "multi") return <MultiCompareTab refs={t.refs} sources={sources} />;
+    if (t.kind === "lens") return <LensCompareTab refs={t.refs} />;
     if (t.kind === "configurator") return <ConfiguratorTab onOpenRunTab={(runId) => addTab({ kind: "run", runId })} />;
     if (t.kind === "llm_validate") return <LlmValidateTab runId={t.runId} />;
     return <PairCompareTab a={t.a} b={t.b} sources={sources} />;
@@ -168,8 +173,7 @@ export function App() {
         .map((t) => t.ref),
     [tabs, pinnedTabs],
   );
- tabs
-        .filter((t): t is { kind: "npz"; ref: NpzRef } => t.kind === "npz" && pinnedTabs.has(tabId(t)))
+
   return (
     <div className="app">
       <Sidebar
@@ -195,6 +199,11 @@ export function App() {
           {selectedNpz.length > 0 && (
             <button className="btn-toggle" onClick={() => setShowKeys((v) => !v)}>
               {showKeys ? "hide keys" : "show keys"}
+            </button>
+          )}
+          {selectedNpz.length > 0 && (
+            <button className="btn-toggle" onClick={() => addTab({ kind: "lens", refs: selectedNpz })}>
+              🔤 token lens
             </button>
           )}
           <button className="btn-toggle" style={{ marginLeft: "auto" }} onClick={() => addTab({ kind: "configurator" })}>
@@ -247,7 +256,7 @@ export function App() {
           </div>
 
           <div className="tabpanels-row">
-            <div className={`tabpanel-col${active?.kind === "configurator" ? " tabpanel-col--wide" : ""}`}>
+            <div className={`tabpanel-col${active?.kind === "configurator" || active?.kind === "lens" ? " tabpanel-col--wide" : ""}`}>
               {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
             </div>
             {tabs

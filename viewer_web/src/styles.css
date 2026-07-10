@@ -108,6 +108,28 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 .metrics-table th { background: #fafafa; text-align: center; }
 .metrics-table td:first-child, .metrics-table th:first-child { text-align: left; }
 
+/* ---- token lens ---- */
+.lens-mode { display: inline-flex; gap: 2px; }
+.lens-mode-on { background: #e8f0fe; border-color: #2563eb; color: #1e3a8a; font-weight: 600; }
+.lens-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+
+.lens-scroll { overflow-x: auto; overflow-y: hidden; }
+.lens-table { border-collapse: collapse; font-size: 11px; }
+.lens-table th, .lens-table td { border: 1px solid #eee; padding: 2px 6px; white-space: nowrap; text-align: left; }
+.lens-table th { background: #fafafa; text-align: center; position: sticky; top: 0; z-index: 1; font-weight: 600; }
+.lens-table .lens-rank-h, .lens-table .lens-rank { background: #f7f7f7; color: #888; text-align: right; position: sticky; left: 0; z-index: 2; font-variant-numeric: tabular-nums; }
+.lens-table th.lens-rank-h { z-index: 3; }
+.lens-agg-h { background: #eef2ff; color: #3730a3; }
+
+.lens-cell { min-width: 96px; background-repeat: no-repeat; }
+.lens-tok { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.lens-prob { color: #555; margin-left: 6px; font-variant-numeric: tabular-nums; font-size: 10px; }
+.lens-empty { color: #ccc; text-align: center; }
+
+.lens-summary td.lens-cell, .lens-summary th { min-width: 72px; text-align: center; }
+.lens-diverge { background: #fef3c7 !important; outline: 1px solid #f59e0b; }
+.lens-diverge-h { background: #fde68a; color: #92400e; }
+
 .pill { font-size: 10px; padding: 1px 5px; border-radius: 10px; background: #eee; color: #555; }
 .pill.attn { background: #ecfeff; color: #0e7490; }
 .pill.validate { background: #fef9c3; color: #854d0e; }

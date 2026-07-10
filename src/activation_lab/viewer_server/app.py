@@ -10,6 +10,7 @@ Routes:
   GET  /api/runs/{run_id}/npz/{kind}/{name}/qk.png?layer=all|N          → raw q·k/√dk
   GET  /api/runs/{run_id}/npz/{kind}/{name}/qkv.png                     → stacked ⟨q,k⟩·v (L, D)
   GET  /api/runs/{run_id}/npz/{kind}/{name}/entropy                     → per-layer entropy
+  GET  /api/runs/{run_id}/npz/{kind}/{name}/logit_lens                  → per-layer top-k next-token predictions
   POST /api/compare/metrics                        → per-layer cos/MAE/STD/Jaccard
   POST /api/compare/heatmap.png                    → pair heatmap (side/diff/sq/hadamard/ratio)
   GET  /api/scenarios                              → list scenario YAML files
@@ -35,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 
 from ..scenario import Scenario
-from . import compute, jobs
+from . import compute, jobs, lens
 from . import ollama as ollama_mod
 from .loader import RunRegistry, load_npz, npz_inventory, resolve_npz
 from .render import matrix_to_png
@@ -285,6 +286,19 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
     ) -> dict:
         tensors = load_npz(_resolve(registry, run_id, kind, name))
         return compute.residual_convergence(tensors, source=source)
+
+    @app.get("/api/runs/{run_id}/npz/{kind}/{name}/logit_lens")
+    def get_logit_lens(
+        run_id: str, kind: Kind, name: str,
+        position: int = Query(-1),
+        top_k: int = Query(10, ge=1),
+    ) -> dict:
+        try:
+            return lens.compute_logit_lens(registry, run_id, kind, name, position, top_k)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.get("/api/runs/{run_id}/logit_stats")
     def get_logit_stats(run_id: str) -> dict:
