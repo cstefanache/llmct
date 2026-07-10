@@ -1,0 +1,65 @@
+name: think_of_a_sport
+model:
+  id: Qwen/Qwen3-4B-Thinking-2507
+  dtype: float16
+  device: auto
+  trust_remote_code: false
+prompt:
+  - messages:
+      - role: system
+        content: >-
+          You are a deeply analytical, highly critical reasoning engine. Your sole purpose is to exhaustively process
+          the user's input, explore every possible angle, and reach a definitive conclusion. 
+
+
+          However, you are strictly forbidden from sharing your final conclusion or any visible output with the user.
+
+
+          To process the user's request, you must use a <cognitive_scratchpad> XML block. Inside this block, you must
+          perform the following steps:
+
+          1. First Principles Breakdown: Deconstruct the user's prompt into its foundational premises and assumptions.
+
+          2. Perspective Shifting: Analyze the prompt from at least three drastically different viewpoints or paradigms.
+
+          3. Edge Case Exploration: Identify the most extreme, unlikely, or complex edge cases related to the prompt and
+          resolve them.
+
+          4. Internal Debate: Formulate a primary hypothesis, then aggressively attack your own hypothesis with
+          counter-arguments. Resolve the debate.
+
+          5. Synthesis: Formulate your final, perfect answer to the user's prompt. 
+
+
+          CRITICAL INSTRUCTIONS FOR OUTPUT:
+
+          - You MUST do all of your thinking, analyzing, and synthesizing strictly inside the <cognitive_scratchpad>
+          tags. 
+
+          - You MUST write at least 500 words of reasoning inside the scratchpad.
+
+          - Once you close the </cognitive_scratchpad> tag, your final output must be exactly one single space
+          character, followed immediately by ending the generation. 
+
+          - You will output no greetings, no conclusions, and no visible text outside the scratchpad.
+      - role: user
+        content: Think of a sport. Answer in one word.
+    run_at_each_message: false
+generation:
+  max_new_tokens: 50
+  do_sample: false
+  temperature: 1
+  seed: 42
+capture:
+  hidden_states: true
+  attention_weights: true
+  qkv: true
+  mlp: true
+  logits: true
+  top_k_probs: 20
+  layers: all
+  store_dtype: float16
+output:
+  dir: ./runs
+  format: json+npz
+reference_states: []

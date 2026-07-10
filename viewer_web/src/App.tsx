@@ -11,7 +11,22 @@ import { LensCompareTab } from "./LensCompareTab";
 import { PinnedOverlayTab } from "./PinnedOverlayTab";
 import { ConfiguratorTab } from "./ConfiguratorTab";
 import { LlmValidateTab } from "./LlmValidateTab";
+import { SteeringView } from "./SteeringView";
 import { pairTabLabel } from "./refLabels";
+
+type AppMode = "snapshot" | "comparison" | "steering";
+
+const MODE_LABELS: Record<AppMode, string> = {
+  snapshot: "Snapshot Analysis",
+  comparison: "Comparison",
+  steering: "Steering",
+};
+
+/** Which top-level mode a tab belongs to. Snapshot + Comparison share the run sidebar. */
+function tabMode(t: ActiveTabKey): AppMode {
+  if (t.kind === "pair" || t.kind === "multi" || t.kind === "lens") return "comparison";
+  return "snapshot"; // run / group / npz / configurator / llm_validate
+}
 
 const SOURCES = ["hidden_in", "hidden_out", "attn_out", "mlp_down_out", "qkv_last"] as const;
 
@@ -58,6 +73,7 @@ export function App() {
   const [tabs, setTabs] = useState<ActiveTabKey[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [pinnedTabs, setPinnedTabs] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<AppMode>("snapshot");
 
   const metaKey = (ref: NpzRef) => `${ref.run_id}|${ref.kind}|${ref.name}`;
 
@@ -164,15 +180,48 @@ export function App() {
     return <PairCompareTab a={t.a} b={t.b} sources={sources} />;
   };
 
-  const active = useMemo(() => tabs.find((t) => tabId(t) === activeTab) ?? null, [tabs, activeTab]);
+  const displayedTabs = useMemo(() => tabs.filter((t) => tabMode(t) === mode), [tabs, mode]);
+  const effectiveActiveId = useMemo(() => {
+    if (activeTab && displayedTabs.some((t) => tabId(t) === activeTab)) return activeTab;
+    return displayedTabs.length ? tabId(displayedTabs[0]) : null;
+  }, [activeTab, displayedTabs]);
+  const active = useMemo(
+    () => displayedTabs.find((t) => tabId(t) === effectiveActiveId) ?? null,
+    [displayedTabs, effectiveActiveId],
+  );
 
   const pinnedNpzRefs = useMemo(
     () =>
-      tabs
+      displayedTabs
         .filter((t): t is { kind: "npz"; ref: NpzRef } => t.kind === "npz" && pinnedTabs.has(tabId(t)))
         .map((t) => t.ref),
-    [tabs, pinnedTabs],
+    [displayedTabs, pinnedTabs],
   );
+
+  const modeNav = (
+    <div className="mode-nav">
+      {(Object.keys(MODE_LABELS) as AppMode[]).map((m) => (
+        <button
+          key={m}
+          className={`mode-tab ${mode === m ? "active" : ""}`}
+          onClick={() => setMode(m)}
+        >
+          {MODE_LABELS[m]}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (mode === "steering") {
+    return (
+      <div className="app app--steering">
+        <main className="main">
+          {modeNav}
+          <SteeringView />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -183,9 +232,10 @@ export function App() {
         onToggleNpz={onToggleNpz}
       />
       <main className="main">
+        {modeNav}
         <div className="header">
           <span className="title">Activation Lab</span>
-          {SOURCES.map((src) => (
+          {mode === "comparison" && SOURCES.map((src) => (
             <label key={src}>
               <input
                 type="checkbox"
@@ -201,14 +251,16 @@ export function App() {
               {showKeys ? "hide keys" : "show keys"}
             </button>
           )}
-          {selectedNpz.length > 0 && (
+          {mode === "comparison" && selectedNpz.length > 0 && (
             <button className="btn-toggle" onClick={() => addTab({ kind: "lens", refs: selectedNpz })}>
               🔤 token lens
             </button>
           )}
-          <button className="btn-toggle" style={{ marginLeft: "auto" }} onClick={() => addTab({ kind: "configurator" })}>
-            + new scenario
-          </button>
+          {mode === "snapshot" && (
+            <button className="btn-toggle" style={{ marginLeft: "auto" }} onClick={() => addTab({ kind: "configurator" })}>
+              + new scenario
+            </button>
+          )}
         </div>
 
         {showKeys && selectedNpz.length > 0 && (
@@ -234,13 +286,20 @@ export function App() {
 
         <div className="tab-area">
           <div className="tabs">
-            {tabs.map((t) => {
+            {displayedTabs.length === 0 && (
+              <span className="muted" style={{ padding: "6px 10px" }}>
+                {mode === "comparison"
+                  ? "select 2+ snapshots in the sidebar to compare, or open the token lens"
+                  : "pick a run or snapshot from the sidebar"}
+              </span>
+            )}
+            {displayedTabs.map((t) => {
               const id = tabId(t);
               const pinned = pinnedTabs.has(id);
               return (
                 <div
                   key={id}
-                  className={`tab ${id === activeTab ? "active" : ""} ${pinned ? "pinned" : ""}`}
+                  className={`tab ${id === effectiveActiveId ? "active" : ""} ${pinned ? "pinned" : ""}`}
                   onClick={() => setActiveTab(id)}
                 >
                   <span
@@ -259,8 +318,8 @@ export function App() {
             <div className={`tabpanel-col${active?.kind === "configurator" || active?.kind === "lens" ? " tabpanel-col--wide" : ""}`}>
               {active ? renderTab(active) : <div className="empty">select something from the sidebar</div>}
             </div>
-            {tabs
-              .filter((t) => pinnedTabs.has(tabId(t)) && tabId(t) !== activeTab)
+            {displayedTabs
+              .filter((t) => pinnedTabs.has(tabId(t)) && tabId(t) !== effectiveActiveId)
               .map((t) => (
                 <div key={tabId(t)} className="tabpanel-col tabpanel-col--pinned">
                   <div className="pinned-col-label">{tabLabel(t)}</div>

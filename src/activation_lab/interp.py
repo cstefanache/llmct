@@ -229,6 +229,125 @@ def logit_lens_batch(
     return frames
 
 
+# --------------------------------------------------------------------------- steering
+
+@torch.no_grad()
+def project_residual_to_logits(
+    vec: torch.Tensor,
+    final_norm: torch.nn.Module,
+    lm_head: torch.nn.Module,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Project a single residual vector (H,) through final_norm + lm_head to full-vocab logits (V,).
+
+    This is the *exact* projection the logit lens uses (see :func:`logit_lens_batch`), so
+    ``softmax(project_residual_to_logits(h))[X]`` is the same "prob(X) at this layer" the viewer
+    displays. Steering solves against this objective so the number the user sets is the number the
+    lens reads. The live ``nn.Module`` is always called (never a hand-rolled norm) so RMSNorm
+    quirks — Gemma's ``(1+w)`` gain, eps, dtype — are handled correctly.
+    """
+    x = vec.to(device=device, dtype=dtype).view(1, 1, -1)
+    logits = lm_head(final_norm(x))
+    return logits.float().view(-1)
+
+
+@dataclass
+class SteerSolution:
+    alpha: float          # scalar applied to the (unit-less) steering direction
+    p0: float             # prob(X) at this layer/position before steering (alpha = 0)
+    target_prob: float    # the clamped target we aimed for
+    achieved_prob: float  # prob(X) actually reached at the returned alpha
+    saturated: bool       # True if the target was unreachable and alpha was capped
+
+
+@torch.no_grad()
+def solve_steer_alpha(
+    h: torch.Tensor,               # (H,) residual at the target position/layer
+    direction: torch.Tensor,       # (H,) steering direction, e.g. lm_head.weight[X]
+    token_id: int,                 # X — the token whose prob we drive
+    target_prob: float,            # desired prob(X) over the full vocab
+    final_norm: torch.nn.Module,
+    lm_head: torch.nn.Module,
+    device: torch.device,
+    dtype: torch.dtype,
+    *,
+    tol: float = 1e-4,
+    max_bracket: int = 40,
+    max_bisect: int = 60,
+    alpha_cap_mult: float = 1e4,
+) -> SteerSolution:
+    """Find ``alpha`` so that ``softmax(project(h + alpha*direction))[X] == target_prob``.
+
+    The objective is empirically monotone in ``alpha`` (increasing for a boost, decreasing for a
+    suppression) but RMSNorm bounds the residual norm, so the reachable prob **saturates** below 1
+    and above 0 — ``target = 1.0`` is generally unreachable. When the target lies outside the
+    reachable range we cap ``alpha`` and return ``saturated=True`` (best effort) rather than looping.
+    """
+    h = h.to(device=device, dtype=torch.float32)
+    d = direction.to(device=device, dtype=torch.float32)
+    eps = 1e-6
+
+    def prob_at(alpha: float) -> float:
+        logits = project_residual_to_logits(h + alpha * d, final_norm, lm_head, device, dtype)
+        lp = torch.log_softmax(logits, dim=-1)
+        return float(lp[token_id].exp().item())
+
+    p0 = prob_at(0.0)
+    tgt = min(max(float(target_prob), eps), 1.0 - eps)
+    if abs(tgt - p0) <= tol:
+        return SteerSolution(0.0, p0, tgt, p0, False)
+
+    sign = 1.0 if tgt > p0 else -1.0
+    hn = float(torch.linalg.norm(h).item())
+    dn = float(torch.linalg.norm(d).item())
+    s0 = (hn / dn) if dn > eps else 1.0
+    alpha_cap = alpha_cap_mult * s0
+
+    # exponential bracketing from a scale-matched seed
+    lo_a, lo_p = 0.0, p0
+    hi_a = sign * s0
+    hi_p = prob_at(hi_a)
+    crossed = False
+    stagnant = 0
+    for _ in range(max_bracket):
+        if (sign > 0 and hi_p >= tgt) or (sign < 0 and hi_p <= tgt):
+            crossed = True
+            break
+        if abs(hi_p - lo_p) < 1e-7:          # prob stopped moving → saturation
+            stagnant += 1
+            if stagnant >= 2:
+                break
+        else:
+            stagnant = 0
+        lo_a, lo_p = hi_a, hi_p
+        hi_a *= 2.0
+        if abs(hi_a) >= alpha_cap:
+            hi_a = sign * alpha_cap
+            hi_p = prob_at(hi_a)
+            crossed = (sign > 0 and hi_p >= tgt) or (sign < 0 and hi_p <= tgt)
+            break
+        hi_p = prob_at(hi_a)
+
+    if not crossed:
+        return SteerSolution(hi_a, p0, tgt, hi_p, True)
+
+    # bisection within [lo_a, hi_a]
+    a_lo, a_hi = lo_a, hi_a
+    a_best, p_best = hi_a, hi_p
+    for _ in range(max_bisect):
+        mid = 0.5 * (a_lo + a_hi)
+        pm = prob_at(mid)
+        a_best, p_best = mid, pm
+        if abs(pm - tgt) <= tol:
+            break
+        if (sign > 0 and pm < tgt) or (sign < 0 and pm > tgt):
+            a_lo = mid
+        else:
+            a_hi = mid
+    return SteerSolution(a_best, p0, tgt, p_best, False)
+
+
 def logit_lens_for_step(
     npz: np.lib.npyio.NpzFile,
     num_layers: int,

@@ -13,16 +13,16 @@ const PAIR_COLORS = [
 // ─── display helpers ──────────────────────────────────────────────────────────
 
 /** Make token whitespace visible in a nowrap table cell. */
-function showToken(tok: string | null, id: number): string {
+export function showToken(tok: string | null, id: number): string {
   if (tok === null) return `#${id}`;
   if (tok === "") return "∅";
   return tok.replace(/\n/g, "⏎").replace(/\t/g, "⇥").replace(/ /g, "·");
 }
 
-const pct = (p: number) => `${(p * 100).toFixed(1)}%`;
+export const pct = (p: number) => `${(p * 100).toFixed(1)}%`;
 
 /** Horizontal probability bar-fill background: fills `prob` fraction of the cell. */
-function barBg(prob: number, color: string): string {
+export function barBg(prob: number, color: string): string {
   const x = Math.max(0, Math.min(100, prob * 100));
   return `linear-gradient(90deg, ${color} ${x}%, transparent ${x}%)`;
 }

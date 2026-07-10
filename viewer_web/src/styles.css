@@ -170,3 +170,54 @@ html, body, #root { height: 100%; margin: 0; font-family: -apple-system, BlinkMa
 .yaml-error { margin-top: 4px; font-size: 11px; }
 
 .log-tail { font-family: monospace; font-size: 11px; max-height: 240px; overflow: auto; background: #111; color: #eee; padding: 8px; border-radius: 4px; margin-top: 6px; white-space: pre-wrap; }
+/* ── top-level mode navigation ─────────────────────────────────────────── */
+.mode-nav { display: flex; gap: 2px; padding: 6px 14px 0; background: #fff; border-bottom: 1px solid #ddd; }
+.mode-tab { padding: 7px 16px; font-size: 13px; border: 1px solid transparent; border-bottom: none; border-radius: 5px 5px 0 0; background: none; cursor: pointer; color: #666; }
+.mode-tab:hover { background: #f0f6ff; color: #1e3a8a; }
+.mode-tab.active { background: #fff; border-color: #ddd; color: #1e3a8a; font-weight: 600; box-shadow: 0 2px 0 0 #2563eb inset; }
+.app--steering { grid-template-columns: 1fr; }
+
+/* ── steering view ─────────────────────────────────────────────────────── */
+.steer-view { display: flex; flex-direction: column; overflow: auto; padding: 10px 14px; gap: 10px; }
+.steer-config { background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; padding: 10px 12px; }
+.steer-run { background: #2563eb; color: #fff; border-color: #2563eb; padding: 4px 14px; font-size: 12px; font-weight: 600; }
+.steer-run:hover { background: #1d4ed8; }
+.steer-messages { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.steer-msg { display: flex; gap: 6px; align-items: flex-start; }
+.steer-msg select { flex: 0 0 90px; }
+.steer-msg textarea { flex: 1; font-family: inherit; font-size: 12px; padding: 4px 6px; resize: vertical; }
+.steer-msg-del { border: none; background: none; color: #b00; cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; }
+
+.steer-body { display: grid; grid-template-columns: 300px 1fr; gap: 12px; align-items: start; }
+.steer-left { position: sticky; top: 0; }
+.steer-conv { background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; padding: 10px; }
+.steer-conv-sec { margin-bottom: 10px; }
+.steer-conv-h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #777; margin-bottom: 4px; }
+.steer-conv-h--steered { color: #b91c1c; }
+.steer-tokrow { display: flex; flex-wrap: wrap; gap: 2px; line-height: 1.7; }
+.steer-tok { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; padding: 1px 3px; border-radius: 3px; background: #f2f4f7; cursor: pointer; white-space: pre; }
+.steer-tok:hover { background: #dbeafe; }
+.steer-tok.sel { background: #2563eb; color: #fff; }
+.steer-tok.frontier { box-shadow: inset 0 -2px 0 #16a34a; }
+.steer-tok.frontier.sel { box-shadow: inset 0 -2px 0 #bbf7d0; }
+.steer-answer-steered { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 3px; padding: 6px 8px; white-space: pre-wrap; }
+
+.steer-main { min-width: 0; }
+.steer-selinfo { font-size: 12px; color: #444; margin-bottom: 8px; }
+.steer-selinfo code, .steer-controls code { font-family: ui-monospace, Menlo, monospace; background: #f2f4f7; padding: 0 3px; border-radius: 3px; }
+
+.steer-pickable { cursor: pointer; }
+.steer-pickable:hover { outline: 2px solid #93c5fd; outline-offset: -2px; }
+.steer-target { outline: 2px solid #dc2626 !important; outline-offset: -2px; font-weight: 600; }
+
+.steer-controls-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.steer-mode { display: inline-flex; gap: 2px; }
+.steer-slider { width: 240px; }
+.steer-val { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 64px; }
+.steer-hint { font-size: 11px; margin-top: 6px; padding: 5px 8px; border-radius: 4px; line-height: 1.5; }
+.steer-hint--ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+.steer-hint--warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+.steer-jump { font: inherit; color: #1d4ed8; background: none; border: none; padding: 0; text-decoration: underline; cursor: pointer; }
+.steer-solved td, .steer-solved th { text-align: center; font-variant-numeric: tabular-nums; }
+.steer-sat { color: #b45309; background: #fef3c7; border-radius: 3px; padding: 0 5px; font-size: 10px; }
+.steer-save-row { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

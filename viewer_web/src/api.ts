@@ -423,3 +423,128 @@ export function openReport(req: ReportRequest): void {
   const params = btoa(JSON.stringify(req));
   window.open(`/api/report/view?params=${encodeURIComponent(params)}`, "_blank");
 }
+
+// ---- steering
+
+export interface SteerMessage { role: "system" | "user" | "assistant"; content: string; }
+
+export interface SteerPosition {
+  abs: number;
+  section: "prompt" | "generated";
+  rel: number;
+  token_id: number;
+  token: string;
+}
+
+export interface SteerBaseResponse {
+  prompt_len: number;
+  full_len: number;
+  positions: SteerPosition[];
+  generated_text: string;
+  eos_hit: boolean;
+  num_layers: number;
+  model_id: string;
+}
+
+/** Per-layer lens payload shared by base + steered readouts (mirrors LensResponse, minus ref ids). */
+export interface SteerLens {
+  model_id: string;
+  num_layers: number;
+  seq_len: number;
+  position: number;
+  layers: LensLayer[];
+}
+
+export type SteerKind = "point" | "broadcast" | "swap";
+
+export interface SteerEdit {
+  token_id: number;
+  position: number;
+  scope: "layer" | "all";
+  layers: number[];
+  mode: "relative" | "absolute";
+  value: number;
+  /** point = edit residual at this position; broadcast = add direction at every position;
+   *  swap = interpolate this token's input embedding toward the target (value = weight 0..1). */
+  kind: SteerKind;
+}
+
+export interface SolvedLayer {
+  layer: number;
+  p0: number;
+  target_prob: number;
+  alpha: number;
+  achieved_prob: number;
+  saturated: boolean;
+}
+
+export interface SteerSwapInfo {
+  weight: number;
+  from_token: string;
+  to_token: string;
+}
+
+export interface SteerRunResponse {
+  kind: SteerKind;
+  position: number;
+  lens_position: number;
+  solved: SolvedLayer[];
+  swap: SteerSwapInfo | null;
+  generated_text: string;
+  steered_token_ids: number[];
+  full_len: number;
+  eos_hit: boolean;
+  diverged_from_base_at: number | null;
+  lens: SteerLens;
+}
+
+export interface SteerSaveResponse {
+  group: string;
+  base_run_id: string;
+  steered_run_id: string;
+  human_label: string;
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function createSteerSession(
+  model: Record<string, unknown>,
+  messages: SteerMessage[],
+  generation?: Record<string, unknown>,
+): Promise<{ session_id: string }> {
+  return postJson("/api/steer/session", { model, messages, generation });
+}
+
+export async function runSteerBase(session_id: string): Promise<SteerBaseResponse> {
+  return postJson("/api/steer/base", { session_id });
+}
+
+export async function getSteerLens(
+  session_id: string, pos: number, top_n: number,
+): Promise<SteerLens> {
+  const r = await fetch(
+    `/api/steer/lens?session_id=${encodeURIComponent(session_id)}&pos=${pos}&top_n=${top_n}`,
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function runSteer(
+  session_id: string, edit: SteerEdit, top_k: number,
+): Promise<SteerRunResponse> {
+  return postJson("/api/steer/run", { session_id, edit, top_k });
+}
+
+export async function saveSteer(
+  session_id: string, label?: string,
+): Promise<SteerSaveResponse> {
+  return postJson("/api/steer/save", { session_id, label });
+}

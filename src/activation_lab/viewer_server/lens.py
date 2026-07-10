@@ -23,22 +23,28 @@ from ..models import load_model
 from ..scenario import ModelConfig
 from .loader import RunRegistry, load_npz, resolve_npz
 
-# model_id -> (model, tokenizer)
-_MODELS: dict[str, tuple[Any, Any]] = {}
+# model_id -> (model, tokenizer, arch, device). Shared by the logit lens and the steering
+# session so a model is resident in the server process across both features and loaded only once.
+_MODELS: dict[str, tuple[Any, Any, Any, Any]] = {}
 _LOCK = threading.Lock()
+
+
+def get_model_by_cfg(cfg: ModelConfig) -> tuple[Any, Any, Any, Any]:
+    """Return a cached ``(model, tokenizer, arch, device)`` for this ModelConfig, loading once."""
+    with _LOCK:
+        cached = _MODELS.get(cfg.id)
+        if cached is not None:
+            return cached
+        model, tokenizer, arch, device = load_model(cfg)
+        _MODELS[cfg.id] = (model, tokenizer, arch, device)
+        return model, tokenizer, arch, device
 
 
 def _get_model(run_json: dict) -> tuple[Any, Any]:
     """Return a cached ``(model, tokenizer)`` for this run's model, loading once."""
-    model_id = run_json["model"]["id"]
-    with _LOCK:
-        cached = _MODELS.get(model_id)
-        if cached is not None:
-            return cached
-        cfg = ModelConfig(**run_json["scenario"]["model"])
-        model, tokenizer, _arch, _device = load_model(cfg)
-        _MODELS[model_id] = (model, tokenizer)
-        return model, tokenizer
+    cfg = ModelConfig(**run_json["scenario"]["model"])
+    model, tokenizer, _arch, _device = get_model_by_cfg(cfg)
+    return model, tokenizer
 
 
 def compute_logit_lens(

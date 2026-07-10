@@ -1,0 +1,29 @@
+name: think_of_a_sport_qwen2.5-14B
+model:
+  id: Qwen/Qwen2.5-14B-Instruct
+  dtype: float16
+  device: auto
+  trust_remote_code: false
+prompt:
+  - messages:
+      - role: user
+        content: Think of a sport. Answer in one word.
+    run_at_each_message: false
+generation:
+  max_new_tokens: 50
+  do_sample: false
+  temperature: 1
+  seed: 42
+capture:
+  hidden_states: true
+  attention_weights: true
+  qkv: true
+  mlp: true
+  logits: true
+  top_k_probs: 20
+  layers: all
+  store_dtype: float16
+output:
+  dir: ./runs
+  format: json+npz
+reference_states: []

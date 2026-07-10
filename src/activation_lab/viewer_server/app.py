@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 
 from ..scenario import Scenario
-from . import compute, jobs, lens
+from . import compute, jobs, lens, steer
 from . import ollama as ollama_mod
 from .loader import RunRegistry, load_npz, npz_inventory, resolve_npz
 from .render import matrix_to_png
@@ -91,6 +91,28 @@ class ReportRequest(BaseModel):
     b: NpzRef | None = None
     refs: list[NpzRef] | None = None
     sources: list[str] = []
+
+
+class SteerSessionRequest(BaseModel):
+    model: dict
+    messages: list[dict]
+    generation: dict | None = None
+    capture: dict | None = None
+
+
+class SteerBaseRequest(BaseModel):
+    session_id: str
+
+
+class SteerRunRequest(BaseModel):
+    session_id: str
+    edit: steer.SteerEdit
+    top_k: int = 10
+
+
+class SteerSaveRequest(BaseModel):
+    session_id: str
+    label: str | None = None
 
 
 def create_app(runs_dir: Path | None = None) -> FastAPI:
@@ -566,6 +588,69 @@ def create_app(runs_dir: Path | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(500, f"report generation failed: {exc}") from exc
         return Response(content=html, media_type="text/html")
+
+    # ----------------------------------------------------------------- steering
+
+    @app.post("/api/steer/session")
+    def steer_session(req: SteerSessionRequest = Body(...)) -> dict:
+        try:
+            sid = steer.create_session(req.model, req.messages, req.generation, req.capture)
+        except Exception as exc:  # bad model id / arch without final norm etc.
+            raise HTTPException(400, f"could not start steering session: {exc}") from exc
+        return {"session_id": sid}
+
+    def _steer_session(session_id: str):
+        try:
+            return steer.get_session(session_id)
+        except KeyError:
+            raise HTTPException(404, "steering session not found (it may have expired)")
+
+    @app.post("/api/steer/base")
+    def steer_base(req: SteerBaseRequest = Body(...)) -> dict:
+        session = _steer_session(req.session_id)
+        try:
+            return steer.run_base(session)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/steer/lens")
+    def steer_lens(
+        session_id: str = Query(...),
+        pos: int = Query(-1),
+        top_n: int = Query(10, ge=1),
+    ) -> dict:
+        session = _steer_session(session_id)
+        try:
+            return steer.get_lens(session, pos, top_n)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/steer/run")
+    def steer_run(req: SteerRunRequest = Body(...)) -> dict:
+        session = _steer_session(req.session_id)
+        try:
+            return steer.run_steer(session, req.edit, req.top_k)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/steer/save")
+    def steer_save(req: SteerSaveRequest = Body(...)) -> dict:
+        session = _steer_session(req.session_id)
+        try:
+            return steer.save_run(session, runs_dir, req.label)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/runs/{run_id}/steer")
+    def get_steer_sidecar(run_id: str) -> dict:
+        try:
+            base = registry.run_dir(run_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        path = base / "steer.json"
+        if not path.exists():
+            raise HTTPException(404, "steer.json not found for this run")
+        return json_mod.loads(path.read_text())
 
     return app
 
